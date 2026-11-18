@@ -331,6 +331,11 @@ Every error Orthant raises has a bolt code with the letter `o`.
 | `↯/o.7.2` | a tag has more than one nearest ancestor among the axis's values |
 | `↯/o.7.3` | the repository has no such branch |
 | `↯/o.7.4` | the axis does not follow a git repository |
+| `↯/o.8.1` | the launcher did not apply an upgrade which was staged |
+| `↯/o.8.2` | the executable has no key, so it cannot be upgraded in place |
+| `↯/o.8.3` | the newest release has no executable for the platform |
+| `↯/o.8.4` | the release's executable could not be downloaded, or its digest was wrong |
+| `↯/o.8.5` | the downloaded executable could not be staged |
 
 Subdivisions: 1 the store format; 2 axes and points; 3 check-in; 4 the working tree and views;
 5 the configuration; 6 the command line; 7 synchronizing with git.

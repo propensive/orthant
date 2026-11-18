@@ -38,6 +38,7 @@ object OrthantTool:
   private val StoreGroup = CommandGroup(t"The store")
   private val TreeGroup = CommandGroup(t"The working tree")
   private val WorkGroup = CommandGroup(t"The work to do")
+  private val ToolGroup = CommandGroup(t"The tool")
 
   private val TodoCommand =
     Subcommand
@@ -92,7 +93,15 @@ object OrthantTool:
     Subcommand(t"diff", t"show the edits which are not checked in: [<path>…]", group = TreeGroup)
 
   private val InstallCommand =
-    Subcommand(t"install", t"install tab-completions into the shell", group = StoreGroup)
+    Subcommand(t"install", t"install tab-completions into the shell", group = ToolGroup)
+
+  // `upgrade` is always accepted, but offered only while a newer release is known: its hidden
+  // twin is what the dispatch matches otherwise (see `SelfUpgrade`).
+  private val upgradeText: Text = t"replace this executable with the newest release"
+  private val UpgradeCommand = Subcommand(t"upgrade", upgradeText, group = ToolGroup)
+
+  private val HiddenUpgrade =
+    Subcommand(t"upgrade", upgradeText, group = ToolGroup, hidden = true)
 
   private val CheckCommand =
     Subcommand(t"check", t"verify everything the store holds", group = StoreGroup)
@@ -215,6 +224,17 @@ object OrthantTool:
   // in the `launcher` module, which depends on this module as a published coordinate.
   def run(): Unit = cli:
     val help = HelpFlag().present
+    val upgrade = if SelfUpgrade.available.present then UpgradeCommand else HiddenUpgrade
+
+    // What the launcher did with an upgrade staged earlier, and the daily check for a newer
+    // release: for a command which is run, and never for a tab-completion.
+    summon[Cli] match
+      case _: Invocation =>
+        SelfUpgrade.report()
+        SelfUpgrade.check()
+
+      case _ =>
+        ()
 
     arguments match
       case _ if help =>
@@ -284,6 +304,9 @@ object OrthantTool:
 
       case InstallCommand() :: _ =>
         execute(install())
+
+      case upgrade() :: _ =>
+        execute(SelfUpgrade.upgrade())
 
       case ExportCommand() :: rest =>
         val strict = StrictFlag().present
@@ -504,6 +527,14 @@ object OrthantTool:
         ( t"orthant install",
           t"",
           t"Installs tab-completions for the shells it finds." )
+
+    case t"upgrade" =>
+      List
+        ( t"orthant upgrade",
+          t"",
+          t"Downloads the newest release, if it is newer than this one, and checks it. It takes",
+          t"the place of this executable when orthant next runs, if its signature is one which",
+          t"this executable accepts." )
 
     case _ =>
       Nil

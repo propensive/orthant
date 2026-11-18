@@ -1256,6 +1256,48 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == t"↯/o.4.1")
 
+    suite(m"Upgrading"):
+      val platforms =
+        t"macos-arm64\thttps://example.com/orthant-macos-arm64\tDEADBEEF\n" +
+          t"linux-x64\thttps://example.com/orthant-linux-x64\t0123\n"
+
+      val manifest: Text = t"version\t0.3.0\nbuild\t3000\nsigned-by\tabc123\n$platforms"
+
+      test(m"A manifest's version and build are read"):
+        UpgradeManifest.parse(manifest).let: release => t"${release.version} ${release.build}"
+
+      . assert(_ == t"0.3.0 3000")
+
+      test(m"A manifest's executable for a platform is read"):
+        UpgradeManifest.parse(manifest).let(_.executable(t"macos-arm64")).let(_.sha256)
+
+      . assert(_ == t"DEADBEEF")
+
+      test(m"A platform which the manifest does not name has no executable"):
+        UpgradeManifest.parse(manifest).let(_.executable(t"windows-x64")).absent
+
+      . assert(_ == true)
+
+      test(m"An empty signed-by is no signing key"):
+        UpgradeManifest.parse(t"version\t0.3.0\nbuild\t3000\nsigned-by\t\n").let(_.signedBy).absent
+
+      . assert(_ == true)
+
+      test(m"A manifest without a build is not a release"):
+        UpgradeManifest.parse(t"version\t0.3.0\n").absent
+
+      . assert(_ == true)
+
+      test(m"A manifest whose build is not a number is not a release"):
+        UpgradeManifest.parse(t"version\t0.3.0\nbuild\tthree\n").absent
+
+      . assert(_ == true)
+
+      test(m"A build id stands for its version"):
+        List(SelfUpgrade.version(3000), SelfUpgrade.version(1002003))
+
+      . assert(_ == List(t"0.3.0", t"1.2.3"))
+
     suite(m"Following a git repository"):
       // A history: one, two and three in a line; side, beside two; and merge, of two and side.
       val one = t"1111111111111111111111111111111111111111"
