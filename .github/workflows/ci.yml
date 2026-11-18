@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  scala:
+  build:
     uses: propensive/.github/.github/workflows/scala-ci.yml@main
     with:
       compile:       orthant.engine.compile orthant.core.compile
