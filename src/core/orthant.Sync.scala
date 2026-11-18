@@ -1,0 +1,267 @@
+                                                                                                  /*
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                                                  ┃
+┃    Orthant, version 0.1.0.                                                                       ┃
+┃    © Copyright 2026 Jon Pretty, Propensive OÜ.                                                   ┃
+┃                                                                                                  ┃
+┃    Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file     ┃
+┃    except in compliance with the License. You may obtain a copy of the License at                ┃
+┃                                                                                                  ┃
+┃        https://www.apache.org/licenses/LICENSE-2.0                                               ┃
+┃                                                                                                  ┃
+┃    Unless required by applicable law or agreed to in writing,  software distributed under the    ┃
+┃    License is distributed on an "AS IS" BASIS,  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,    ┃
+┃    either express or implied. See the License for the specific language governing permissions    ┃
+┃    and limitations under the License.                                                            ┃
+┃                                                                                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+                                                                                                  */
+package orthant
+
+import proscenium.{List, Nil, `::`}
+import soundness.*
+import soundness.collationComparable
+import soundness.collations.codepointCollation
+import soundness.dysasymptotics.linearSize
+import soundness.errorDiagnostics.emptyDiagnostics
+import soundness.filesystemBackends.javaBaseFilesystem
+import soundness.filesystemOptions.createNonexistentParents
+import soundness.filesystemOptions.deleteRecursively
+import soundness.filesystemOptions.dereferenceSymlinks
+import soundness.filesystemOptions.moveAtomically
+import soundness.filesystemOptions.overwritePreexisting
+import soundness.gitBackends.soundnessGit
+import soundness.pathInterfaces.pathOnLinux
+import soundness.sortingAlgorithms.timsort
+
+// Following a git repository with an axis. A tag which the axis's pattern takes becomes a
+// value, named by the start of its commit's hash and labelled with the tag, beneath the nearest
+// value whose commit is an ancestor of it. A branch which the axis tracks has a value of its
+// own name for what is not yet released on it. When a new tag is found on that branch, the
+// branch's value becomes the tag's, with everything stored at it, and a new, empty value takes
+// its place beneath: what was checked in since the last release is what was released.
+object Sync:
+  // What a sync needs of a repository: its tags and branches, each with its commit's hash,
+  // the branch which is checked out, and whether one commit is an ancestor of another.
+  case class Refs
+    ( tags:     List[(Text, Text)],
+      branches: List[(Text, Text)],
+      head:     Optional[Text],
+      ancestor: (Text, Text) => Boolean )
+
+  // Whether a name is one the pattern takes: `*` stands for any run of characters.
+  def takes(pattern: Text, name: Text): Boolean =
+    def recur(parts: List[Text], rest: Text, first: Boolean): Boolean = parts match
+      case part :: Nil =>
+        if first then rest == part else rest.ends(part)
+
+      case part :: tail =>
+        if first then rest.starts(part) && recur(tail, rest.skip(part.length), false)
+        else
+          List.range(0, rest.length - part.length + 1).exists: index =>
+            rest.skip(index).starts(part) && recur(tail, rest.skip(index + part.length), false)
+
+      case _ =>
+        true
+
+    recur(pattern.cut(t"*"), name, true)
+
+  // Runs a block with the references of the repository which the directory is in.
+  def reading[result](directory: Text)(block: Refs => result): result raises Store.Error =
+    val missing = Store.Error(Store.Reason.Repository(t"there is none above $directory"))
+
+    def found(current: Text): Text =
+      if Disk.exists(t"$current/.git") then current
+      else if current == t"" then abort(missing)
+      else found(Disk.parent(current))
+
+    val root = found(directory)
+
+    mitigate:
+      case error: Git.Error  => Store.Error(Store.Reason.Repository(Orthant.prose(error)))
+      case error: Io.Error   => Store.Error(Store.Reason.Repository(Orthant.prose(error)))
+      case error: Path.Error => Store.Error(Store.Reason.Repository(Orthant.prose(error)))
+
+    . protect:
+        root.as[Path on Linux].open[Git.Worktree](): worktree ?=>
+          val known = scala.collection.mutable.HashMap[(Text, Text), Boolean]()
+
+          def ancestor(upper: Text, lower: Text): Boolean =
+            known.getOrElseUpdate
+              ( (upper, lower),
+                worktree.isAncestor(Git.Hash.unsafe(upper), Git.Hash.unsafe(lower)) )
+
+          val head = worktree.head().value match
+            case Git.Head.Attached(branch, _) => branch.text
+            case _                            => Unset
+
+          val tags = worktree.tags().value.to[List].map: (tag, hash) => (tag.text, hash.text)
+
+          val branches = worktree.branches().value.to[List].map: (branch, hash) =>
+            (branch.text, hash.text)
+
+          block(Refs(tags, branches, head, ancestor))
+
+  private def short(hash: Text): Text = hash.keep(12)
+
+  // The nearest of the axis's commits which are ancestors of a commit, or the commit itself if
+  // `inclusive` is set: the root's name if there is none.
+  private def nearest
+    ( store: Store, entry: AxisEntry, hash: Text, refs: Refs, inclusive: Boolean, name: Text )
+  :   Text raises Store.Error raises Axis.Error =
+
+    val above = entry.value.filter: value =>
+      value.commit.let: commit =>
+        (inclusive || commit != hash) && (commit == hash || refs.ancestor(commit, hash))
+
+      . or(false)
+
+    val nearest = above.filter: value =>
+      !above.exists: other =>
+        other.name != value.name &&
+          refs.ancestor(value.commit.or(t""), other.commit.or(t"")) && other.commit != value.commit
+
+    nearest match
+      case value :: Nil => value.name
+      case Nil          => entry.value.filter(_.parent.absent).head.let(_.name).or(t"")
+      case _            => abort(Store.Error(Store.Reason.Lineage(name, entry.name)))
+
+  // The store in which a value of an axis has another name: its records are moved, and the
+  // values beneath it follow.
+  private def rename
+    ( store: Store, axis: Text, old: Text, name: Text, change: ValueEntry => ValueEntry )
+  :   Store raises Store.Error raises Axis.Error =
+
+    def written(value: Text): Text = t"$axis=${value.cut(t"/").join(t"_")}"
+
+    Disk.directories(store.data).each: directory =>
+      val pairs = directory.cut(t",")
+
+      if old != name && pairs.has(written(old)) then
+        val moved =
+          pairs.map { pair => if pair == written(old) then written(name) else pair }.join(t",")
+
+        def failed(error: fulminate.Error): Store.Error =
+          Store.Error(Store.Reason.Access(directory, Orthant.prose(error)))
+
+        mitigate:
+          case error: Io.Error   => failed(error)
+          case error: Path.Error => failed(error)
+
+        . protect:
+            val target = t"${store.data}/$moved".as[Path on Linux]
+            t"${store.data}/$directory".as[Path on Linux].moveTo(target)
+
+    val entries = store.settings.axis.map: entry =>
+      if entry.name != axis then entry else
+        entry.copy(value = entry.value.map: value =>
+          if value.name == old then change(value.copy(name = name))
+          else if value.parent == old then value.copy(parent = name)
+          else value)
+
+    Store.load(store.configure(store.settings.copy(axis = entries)).root)
+
+  private def add(store: Store, axis: Text, value: ValueEntry)
+  :   Store raises Store.Error raises Axis.Error =
+
+    val entries = store.settings.axis.map: entry =>
+      if entry.name == axis then entry.copy(value = entry.value + List(value)) else entry
+
+    store.configure(store.settings.copy(axis = entries))
+
+  private def git(store: Store, axis: Text): AxisEntry raises Store.Error =
+    val entry = store.entry(axis).or(abort(Store.Error(Store.Reason.Unknown(axis))))
+    if entry.kind != t"git" then abort(Store.Error(Store.Reason.Kind(axis)))
+    entry
+
+  // The store after an axis has taken up the repository's new tags, and the branches named,
+  // with a line for each thing done. With no branch named and none tracked, the branch which is
+  // checked out is tracked.
+  def apply(store: Store, axis: Text, refs: Refs, track: List[Text])
+  :   (Store, List[Text]) raises Store.Error raises Axis.Error =
+
+    val entry = git(store, axis)
+    val pattern = entry.pattern.or(t"*")
+    val tags = refs.tags.filter { (tag, hash) => takes(pattern, tag) }.order(_(0))
+
+    // A tag of a commit which is already a value is one more label for it.
+    val labelled = entry.value.fold((store, List[Text]())): (state, value) =>
+      val extra =
+        tags.filter { (tag, hash) => value.commit == hash && !value.labels.has(tag) }.map(_(0))
+
+      if extra.nil then state else
+        val label = (value.labels + extra).join(t" ")
+        val renamed = rename(state(0), axis, value.name, value.name, _.copy(label = label))
+        (renamed, state(1) + extra.map { tag => t"$tag is another name for ${value.title}" })
+
+    val commits = tags.map(_(1)).distinct.filter: hash => !entry.value.exists(_.commit == hash)
+
+    // An ancestor before its descendants.
+    def before(hash: Text): Int =
+      commits.count: other => other != hash && refs.ancestor(other, hash)
+
+    val ordered = commits.order(before(_))
+
+    val tagged = ordered.fold(labelled): (state, hash) =>
+      val (store, notes) = state
+      val entry = git(store, axis)
+      val label = tags.filter(_(1) == hash).map(_(0)).join(t" ")
+      val title = label.cut(t" ").head
+      val parent = nearest(store, entry, hash, refs, false, title)
+
+      // A branch whose unreleased value lies between that parent and this commit is released.
+      val released = entry.value.filter: value =>
+        value.branch.or(false) && value.parent == parent && refs.branches.exists: (branch, tip) =>
+          branch == value.name && (tip == hash || refs.ancestor(hash, tip))
+
+      def added: (Store, List[Text]) =
+        val entry = ValueEntry(short(hash), parent, label = label, commit = hash)
+        val note = t"added $title beneath ${store.title(axis, parent)}"
+        (add(store, axis, entry), notes + List(note))
+
+      released.head.lay(added): branch =>
+        val held = store.dossiers.values.to[List].exists: dossier =>
+          dossier.holdings.keys.to[List].exists: point => point.coordinates.at(axis) == branch.name
+
+        val renamed = rename(store, axis, branch.name, short(hash),
+            _.copy(label = label, commit = hash, branch = Unset))
+
+        val fresh = add(renamed, axis, ValueEntry(branch.name, short(hash), branch = true))
+        val note = t"released ${branch.name} as $title; ${branch.name} now follows $title"
+
+        val caution = t"warning: everything checked in at ${branch.name} is now part of $title"
+        val warning = if held then List(caution) else Nil
+
+        (fresh, notes + List(note) + warning)
+
+    val tracked = git(tagged(0), axis).value.filter(_.branch.or(false)).map(_.name)
+    val wanted = if track.nil && tracked.nil then refs.head.lay(Nil)(List(_)) else track
+
+    wanted.filter(!tracked.has(_)).fold(tagged): (state, branch) =>
+      val (store, notes) = state
+      if !Store.valid(branch) then abort(Store.Error(Store.Reason.Name(branch)))
+
+      def unknown: Nothing = abort(Store.Error(Store.Reason.Branch(branch)))
+      val tip = refs.branches.filter(_(0) == branch).head.let(_(1)).or(unknown)
+
+      val parent = nearest(store, git(store, axis), tip, refs, true, branch)
+
+      ( add(store, axis, ValueEntry(branch, parent, branch = true)),
+        notes + List(t"tracking $branch beneath ${store.title(axis, parent)}") )
+
+  // The store in which a tag is a value beneath a parent which is given, for a tag whose
+  // nearest ancestor a sync could not choose.
+  def pin(store: Store, axis: Text, tag: Text, parent: Text, refs: Refs)
+  :   Store raises Store.Error raises Axis.Error =
+
+    val entry = git(store, axis)
+
+    val hash =
+      refs.tags.filter(_(0) == tag).head.let(_(1)).or(abort(Store.Error(Store.Reason.Unknown(tag))))
+
+    val above = store.named(axis, parent).or(abort(Store.Error(Store.Reason.Unknown(parent))))
+
+    if entry.value.exists(_.commit == hash)
+    then abort(Store.Error(Store.Reason.ValueExists(axis, tag)))
+
+    add(store, axis, ValueEntry(short(hash), above, label = tag, commit = hash))

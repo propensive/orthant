@@ -1,0 +1,15 @@
+# What this repository's release needs that another's does not. See propensive/.github, which
+# holds the workflow and the script; a release is cut by `git tag -s X.Y.Z && git push --tags`.
+# One `key value` line each; the library list is not declared, because release.sh derives it
+# from `release.stage`, and the version is the tag's alone.
+
+name       orthant
+title      orthant
+
+build      orthant.core.compile
+launcher   orthant.launcher
+
+# The publication homes Burdock matches the classpath against by SHA-256, so that a library on
+# it becomes an on-demand `Burdock-Require` URL rather than being inlined into the executable.
+# Pyrocosm is not among them: orthant does not depend on it.
+hints      propensive/orthant,propensive/soundness,propensive/proscala

@@ -1,0 +1,308 @@
+//| mill-version: 1.1.5
+//| mill-jvm-version: temurin:25
+//| mill-jvm-opts: ["-Xss16m", "-XX:NonProfiledCodeHeapSize=250m", "-XX:ReservedCodeCacheSize=500m"]
+//| mvnDeps: ["dev.propensive:crux-mill:0.1.1"]
+
+package build
+
+import mill.*
+import scalalib.*
+// `PomSettings`, `License`, `Developer`, `VersionControl`, `PublishModule` — the Maven publishing
+// vocabulary, imported exactly as the Soundness build does (`scalalib.publish.*`).
+import publish.*
+// crux (propensive/crux): the pinned releases on GitHub, read directly as Coursier repositories.
+import crux.*
+
+object settings:
+  // The compiler is the propensive Scala fork, Proscala, at this version: pinned in `deps` below
+  // like the libraries and resolved from its GitHub release by crux, which also forces every
+  // `org.scala-lang` artifact to it, since the pinned libraries name the release each was built
+  // with. The fork stays TASTy-compatible across its patch releases, which is what every such
+  // pin assumes.
+  val scalaVersion = "3.10.0-pro-1.1.4"
+
+  // This build's version. A release's version is declared once, by its tag: the release
+  // (release.sh in propensive/.github) and a snapshot (snapshot.sh) both name it in
+  // `ORTHANT_RELEASE_VERSION`. Any other build is the version after the latest release reachable
+  // from HEAD — its patch version plus one, which sorts after that release and before whichever
+  // follows it — or `0.0.1` where no release tag is reachable, as in CI's shallow checkout.
+  // Called from `Task.Input`s, so the environment and the tags are read on every invocation.
+  def version(env: Map[String, String]): String =
+    env.get("ORTHANT_RELEASE_VERSION").filter(_.nonEmpty).getOrElse(nextVersion)
+
+  def nextVersion: String =
+    val root = mill.api.BuildCtx.workspaceRoot
+
+    val latest: Option[String] =
+      scala.util.Try:
+        os.proc("git", "describe", "--tags", "--abbrev=0", "--match", "[0-9]*.[0-9]*.[0-9]*")
+        . call(cwd = root, stderr = os.Pipe).out.text().trim
+      . toOption
+
+    def numeric(part: String): Boolean = part.nonEmpty && part.forall(_.isDigit)
+
+    latest.collect:
+      case s"$major.$minor.$patch" if Seq(major, minor, patch).forall(numeric) =>
+        s"$major.$minor.${patch.toInt + 1}"
+    . getOrElse("0.0.1")
+
+  val scalaOptions = Seq(
+    // The fork's opt-in behaviours, enabled by name, exactly as the Soundness build enables them —
+    // orthant compiles Soundness idioms from Soundness's own TASTy, so it needs the same repairs.
+    "-Zalias-captures",
+    "-Zdiagnostic-givens",
+    "-Zgiven-prefixes",
+    "-Zinline-source-maps",
+    "-Zopaque-mutability",
+    "-Zpure-iarrays",
+    "-Zfrozen-pure",
+    "-Zretains-bounds",
+    "-Zretains-skolems",
+    "-Zspreadable-varargs",
+    "-Zunboxed-pure-types",
+    "-Zunion-captures",
+    "-experimental",
+    "-new-syntax",
+    "-feature",
+    "-preview",
+    "-deprecation",
+    "-Wunused:imports",
+    "-Wimplausible-patterns",
+    // Suppress `-Wunused:imports` false positives on given/capability marker imports that dotty's
+    // usage tracking misses: the import is load-bearing (removing it breaks compilation), so it is
+    // silenced narrowly by `origin` (the imported symbol's path). Mirrors the Soundness build.
+    "-Wconf:origin=.*strategies.throwUnsafely:s",
+    "-Wconf:origin=.*errorDiagnostics.empty:s",
+    "-Wconf:origin=.*logging.silent:s",
+    "-Wconf:origin=.*pathOnLinux:s",
+    "-Wconf:origin=.*systems.java:s",
+    "-Wconf:origin=.*overwritePreexisting:s",
+    // Temporary: the fork compiler crashes in `ImportSuggestions` while computing a "did you
+    // mean?" hint over the bundled classpath, masking the real error. Disable the suggestion pass.
+    "-Ximport-suggestion-timeout", "0",
+    "-Xmax-inlines", "48",
+    "-Yno-flexible-types",
+    "-Yexplicit-nulls",
+    "-Ycheck-all-patmat",
+    "-language:experimental.modularity",
+    "-language:experimental.dependent",
+    "-language:experimental.genericNumberLiterals",
+    "-language:experimental.erasedDefinitions",
+    "-language:implicitConversions",
+    "-language:experimental.saferExceptions",
+    "-language:experimental.subCases",
+    "-language:experimental.multiSpreads",
+    // NOT capture-checked, unlike fume and flame. Those projects' sources are written for it;
+    // orthant's are not yet, and enabling `-Ycc-new -language:experimental.captureChecking` here makes
+    // every `Stdio` threaded out of an Ethereal `Invocation` a capture error ("capability `any`
+    // cannot flow into capture set {}"). Reading Soundness's capture-checked TASTy from an
+    // unchecked compilation unit is fine, which is what this build has always done. Enable the
+    // flags — and fix the fallout — as a change in its own right.
+  )
+
+  // The tool's sources are written for the proscenium predef (the Soundness house predef), so
+  // this standalone build replicates `-Yno-predef -Yimports:…`, exactly as fume and flame do.
+  // `scala` is deliberately NOT imported (Soundness #1693): the blessed collections are
+  // proscenium's opaque `List`/`Set`/`Map`/`Array`, and naming both packages would make every such
+  // reference ambiguous. Stdlib collections must announce themselves with an explicit
+  // `scala.`-qualified name or import, and cross the boundary through `proscenium.compat`.
+  val predef = Seq("-Yno-predef", "-Yimports:java.lang,proscenium")
+
+  // Soundness is published as components: each tagged version is a GitHub release whose assets
+  // are the individual component jars, each embedding its own POM and ivy.xml, which crux resolves
+  // directly. Component jars carry no `_3` suffix, hence the single-colon `mvn"…"`. Each list
+  // names TOP-LEVEL components only; the rest of what `import soundness.*` touches arrives
+  // transitively.
+  //
+  // Note what is absent: Pyrocosm. Orthant is not a Pyrocosm application. See etc/refs.
+
+  // The engine is pure: values, hunks and the cascade, with no filesystem and no terminal.
+  def engineDeps(soundness: String) = Seq(
+    mvn"dev.propensive:dissonance-core:$soundness",          // diff, Diff#collate
+    mvn"dev.propensive:gossamer-core:$soundness",            // Text operations
+    mvn"dev.propensive:contingency-core:$soundness")         // raises, recover
+
+  // The tool: the store on disk, the working tree and the command line.
+  def coreDeps(soundness: String) = engineDeps(soundness) ++ Seq(
+    mvn"dev.propensive:burdock-core:$soundness",            // externalize + the repackager
+    mvn"dev.propensive:digression-ansi:$soundness",          // stack-trace diagnostics
+    mvn"dev.propensive:escapade-io:$soundness",              // Teletype <-> Stdio writables
+    mvn"dev.propensive:ethereal-core:$soundness",            // the resident daemon
+    mvn"dev.propensive:eucalyptus-core:$soundness",          // logging.silentLogging
+    mvn"dev.propensive:exoskeleton-completions:$soundness",  // cli + tab-completion
+    mvn"dev.propensive:galilei-jvm:$soundness",              // the filesystem
+    mvn"dev.propensive:hieroglyph-core:$soundness",          // charEncoders/charDecoders
+    mvn"dev.propensive:octogenarian-native:$soundness",      // reading a repository's tags
+    mvn"dev.propensive:stratiform-core:$soundness")          // the TEL configuration
+
+  // The test module's extra surface: a `Suite` and the BinTEL event stream a host reads.
+  def testDeps(soundness: String) = coreDeps(soundness) ++ Seq(
+    mvn"dev.propensive:probably-cli:$soundness",
+    mvn"dev.propensive:probably-events:$soundness")
+
+// The propensive libraries this build depends on, pinned in etc/refs (the format, the snapshot flow
+// and the shared scripts are documented in propensive/.github): each is a release `X.Y.Z`, or a
+// snapshot `X.Y.Z-<12 hex>` of an unreleased upstream build, published there by `make snapshot`.
+// crux resolves each — and, transitively, what each was built against — from its GitHub release;
+// nothing is installed locally. The Proscala pin is declared here rather than in etc/refs, which
+// deps.py (propensive/.github) also reads and which does not yet know the form of a Proscala
+// version. The file is read as a source, so editing it invalidates every resolution.
+object deps extends CruxModule:
+  def refsFiles = Task.Sources(mill.api.BuildCtx.workspaceRoot / "etc" / "refs")
+  def declared = Seq(Pin("propensive/proscala", settings.scalaVersion))
+
+  def soundness: T[String] = Task(version("soundness")())
+
+// A module compiled with the pinned fork, against the pinned libraries.
+trait Fork extends CruxScalaModule:
+  def crux = deps
+
+trait Project extends Module:
+  def moduleDir = super.moduleDir / os.up / "src"
+
+// Dependencies are typed `PublishModule*` (as in the Soundness build) so that `moduleDeps` can
+// return `Seq[PublishModule]` — the type `SonatypeCentralPublishModule` requires of the modules that
+// mix in `Publishing`. This costs the unpublished modules (`launcher`, `test`) nothing.
+trait Component(dependencies: PublishModule*) extends Fork:
+  override def scalacOptions = settings.scalaOptions ++ settings.predef
+  def moduleId: String = moduleDir.last
+  def moduleDeps: Seq[PublishModule] = dependencies
+  def sources = Task.Sources(moduleDir)
+
+  // The beneficence plugin writes `META-INF/givens/<typeclass>` and `META-INF/services/probably.Suite`
+  // into every module that contributes an entry, so each is a *fragment* of a build-wide index rather
+  // than a whole file. Mill's default assembly rules are last-one-wins, which silently truncates
+  // them: with Soundness arriving as a few dozen component jars that collide on those entries, the
+  // givens index would lose almost everything, and `beneficence` reads it at runtime through
+  // `getResources`. Concatenate instead, exactly as the Soundness build does. Every fragment ends
+  // with a newline, so the empty separator is correct.
+  override def assemblyRules = super.assemblyRules ++ Seq(
+    mill.javalib.Assembly.Rule.AppendPattern("META-INF/givens/.*"),
+    mill.javalib.Assembly.Rule.AppendPattern("META-INF/services/.*"))
+
+// Mixed into the library module that is released (`core`) — the module the `launcher` then pulls
+// back in as a published coordinate. Releases go to GitHub Releases, by a tag (see release.sh in
+// propensive/.github), with `publishLocal` producing the jar and its POM; the Sonatype module is
+// retained only for its POM machinery. Every setting mirrors the Soundness build: the same
+// `dev.propensive` organization, URL, Apache-2.0 licence, GitHub SCM and developer, plus the empty
+// `-javadoc.jar`.
+trait Publishing extends Fork, SonatypeCentralPublishModule:
+  // A `Task.Input` reading `Task.env`, not a plain value: `ORTHANT_RELEASE_VERSION` is how a release
+  // and `make snapshot` (release.sh and snapshot.sh in propensive/.github) drive the version
+  // through a Mill daemon that is already running — the daemon freezes `sys.env` at its own start,
+  // while `Task.env` is the environment of each `./mill` invocation. Without it, the version is
+  // `settings.nextVersion`. The launcher resolves `core` at this same version.
+  def publishVersion = Task.Input:
+    settings.version(Task.env)
+
+  def artifactSuffix = Task("")
+
+  def pomSettings = Task(PomSettings(
+    description = "orthant",
+    organization = "dev.propensive",
+    url = "https://soundness.dev/",
+    licenses = Seq(License.`Apache-2.0`),
+    versionControl = VersionControl.github("propensive", "orthant"),
+    developers = Seq(Developer("propensive", "Jon Pretty", "https://github.com/propensive"))))
+
+  override def docJar = Task:
+    val jar = Task.dest / "empty.jar"
+    val zos = new java.util.zip.ZipOutputStream(new java.io.FileOutputStream(jar.toIO))
+    zos.close()
+    PathRef(jar)
+
+object orthant extends Project:
+  // The engine: axes, points, hunks, re-basing and check-in over an abstract store. It performs
+  // no IO, so that another tool (Fuel, say) can read a store through it. Released as
+  // `dev.propensive:orthant-engine`.
+  object engine extends Component(), Publishing:
+    def mvnDeps = Task(settings.engineDeps(deps.soundness()))
+
+  // The `orthant` command-line tool: the store on disk, the working tree and the subcommands,
+  // over the engine. Released as `dev.propensive:orthant-core`.
+  object core extends Component(engine), Publishing:
+    def mvnDeps = Task(settings.coreDeps(deps.soundness()))
+
+  // The invocation point, ALONE in its own module (`src/launcher/orthant_launcher.scala` — just
+  // the `@main def orthant = externalize(OrthantTool.run())`). It depends on `core` and `engine`
+  // NOT as Mill `moduleDeps` but as PUBLISHED coordinates, so coursier puts the byte-identical
+  // released jars on the compile classpath that `externalize` hashes; the repackager then
+  // externalizes them into on-demand downloads instead of inlining.
+  //
+  // NOTE: these resolve from `~/.ivy2/local`, so a `publishLocal` must precede this module's
+  // assembly (`make assembly` does so).
+  object launcher extends Component():
+    def mvnDeps = Task:
+      Seq(mvn"dev.propensive:orthant-core:${core.publishVersion()}",
+          mvn"dev.propensive:orthant-engine:${engine.publishVersion()}")
+        ++ settings.coreDeps(deps.soundness())
+
+    def finalMainClass = "orthant.orthant"
+
+    // A clean zip (no executable shell preamble) so the Burdock repackager can read and rewrite
+    // the assembled JAR.
+    def prependShellScript = ""
+
+  // A `Suite` is not a main class: the beneficence plugin writes the
+  // `META-INF/services/probably.Suite` index a host reads to discover suites, so the plugin must
+  // run on this module or `fume run -c` finds nothing. `orthant.runTests` is a plain-`java` entry
+  // point that drives `Tests.invoke` in-process, for `make test-plain`.
+  object test extends Component(core, engine):
+    def mvnDeps = Task(settings.testDeps(deps.soundness()))
+    def scalacPluginMvnDeps = Task(Seq(mvn"dev.propensive:beneficence-plugin:${deps.soundness()}"))
+    def finalMainClass = "orthant.runTests"
+
+// The release: the library module's jar, with its POM and ivy.xml embedded under
+// `META-INF/maven/<group>/<artifactId>/`, named `<artifactId>-<version>.jar`, exactly as the
+// Soundness build stages its own. A jar so staged is all a consumer needs: the shared sync script
+// (propensive/.github) reconstructs the ivy2 layout coursier resolves from, which is how `make
+// snapshot` publishes an unreleased build for a dependent repository to pin.
+object release extends Module:
+  def modules: Seq[PublishModule] = Seq(orthant.engine, orthant.core)
+
+  private def withDescriptors(source: os.Path, target: os.Path, entries: Seq[(String, os.Path)])
+  :   Unit =
+    val input = new java.util.zip.ZipFile(source.toIO)
+    val output = new java.util.zip.ZipOutputStream(new java.io.FileOutputStream(target.toIO))
+    try
+      val existing = input.entries()
+      while existing.hasMoreElements do
+        val entry = existing.nextElement()
+        output.putNextEntry(new java.util.zip.ZipEntry(entry.getName))
+        if !entry.isDirectory then input.getInputStream(entry).transferTo(output)
+        output.closeEntry()
+
+      for (name, file) <- entries do
+        output.putNextEntry(new java.util.zip.ZipEntry(name))
+        output.write(os.read.bytes(file))
+        output.closeEntry()
+    finally
+      output.close()
+      input.close()
+
+  // The ivy.xml published beside each jar as `<artifactId>-<version>.ivy.xml`: the metadata
+  // Coursier reads when crux (propensive/crux) uses the release as an Ivy-pattern repository,
+  // without the sources and javadoc publications. Mill declares those in the `compile`
+  // configuration too, and the crux artifact pattern names the main jar for any publication
+  // without a classifier, so left in place they would resolve to the jar itself.
+  private def stripDescriptor(ivy: String): String =
+    val artifact = """<artifact\b[^>]*?(?:/>|>\s*</artifact>)""".r
+    val filtered = artifact.replaceAllIn(ivy, found =>
+      if found.matched.contains("classifier=") || found.matched.matches("""(?s).*\btype="(src|doc)".*""")
+      then "" else java.util.regex.Matcher.quoteReplacement(found.matched))
+    filtered.linesIterator.filter(_.trim.nonEmpty).mkString("", "\n", "\n")
+
+  def stage: T[Seq[PathRef]] = Task:
+    val jars: Seq[(PathRef, String, String, String, PathRef, PathRef)] =
+      Task.traverse(modules)(module =>
+        Task.Anon((module.jar(), module.pomSettings().organization, module.artifactId(),
+                   module.publishVersion(), module.pom(), module.ivy())))()
+
+    jars.flatMap: (jar, group, artifactId, version, pom, ivy) =>
+      val target = Task.dest / s"$artifactId-$version.jar"
+      val prefix = s"META-INF/maven/$group/$artifactId"
+      val descriptors = Seq(s"$prefix/pom.xml" -> pom.path, s"$prefix/ivy.xml" -> ivy.path)
+      withDescriptors(jar.path, target, descriptors)
+      val metadata = Task.dest / s"$artifactId-$version.ivy.xml"
+      os.write.over(metadata, stripDescriptor(os.read(ivy.path)))
+      Seq(PathRef(target), PathRef(metadata))

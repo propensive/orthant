@@ -1,0 +1,8 @@
+# The Mill build's output, and the artefacts `make` produces from it, anchored to the root.
+/out
+/orthant
+/orthant.jar
+/dist/
+.bloop
+.metals
+.bsp

@@ -1,0 +1,24 @@
+name: CI
+
+# Build and test every pull request and every merge into main, via the shared
+# Soundness-application workflow — see propensive/.github for what it does and what it expects of
+# this repository (the ./mill wrapper, etc/shared, and the pins in etc/refs).
+#
+# The launcher resolves its libraries (orthant-core, orthant-engine) as published coordinates, so
+# every publishing module is published locally first (`__.publishLocal`).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  scala:
+    uses: propensive/.github/.github/workflows/scala-ci.yml@main
+    with:
+      compile:       orthant.engine.compile orthant.core.compile
+      publish_local: __
+      assembly:      orthant.launcher.assembly
+      test_assembly: orthant.test.assembly
+      test_main:     orthant.runTests
