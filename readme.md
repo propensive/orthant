@@ -39,6 +39,7 @@ orthant export site fr v2 [--strict]     # the plain documents at a point; --str
 orthant <command> --help                 # how a command is written, and what it does
 orthant check                            # verify everything the store holds
 orthant install                          # tab-completions for the shell
+orthant upgrade                          # replace this executable with the newest release
 ```
 
 An axis can follow the git repository the store is in:

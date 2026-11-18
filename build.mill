@@ -124,16 +124,23 @@ object settings:
 
   // The tool: the store on disk, the working tree and the command line.
   def coreDeps(soundness: String) = engineDeps(soundness) ++ Seq(
+    mvn"dev.propensive:aviation-core:$soundness",           // the daily upgrade check
     mvn"dev.propensive:burdock-core:$soundness",            // externalize + the repackager
     mvn"dev.propensive:digression-ansi:$soundness",          // stack-trace diagnostics
     mvn"dev.propensive:escapade-io:$soundness",              // Teletype <-> Stdio writables
     mvn"dev.propensive:ethereal-core:$soundness",            // the resident daemon
     mvn"dev.propensive:eucalyptus-core:$soundness",          // logging.silentLogging
     mvn"dev.propensive:exoskeleton-completions:$soundness",  // cli + tab-completion
+    mvn"dev.propensive:gastronomy-core:$soundness",          // the upgrade's digest check
     mvn"dev.propensive:galilei-jvm:$soundness",              // the filesystem
     mvn"dev.propensive:hieroglyph-core:$soundness",          // charEncoders/charDecoders
+    mvn"dev.propensive:monotonous-core:$soundness",          // alphabets.hexLowerCase
     mvn"dev.propensive:octogenarian-native:$soundness",      // reading a repository's tags
-    mvn"dev.propensive:stratiform-core:$soundness")          // the TEL configuration
+    mvn"dev.propensive:parasite-core:$soundness",            // the task of the daily check
+    mvn"dev.propensive:stratiform-core:$soundness",          // the TEL configuration
+    mvn"dev.propensive:telekinesis-core:$soundness",         // fetching the upgrade manifest
+    mvn"dev.propensive:telekinesis-jvm:$soundness",          // httpBackends.javaNetHttp
+    mvn"dev.propensive:urticose-core:$soundness")            // HttpUrl
 
   // The test module's extra surface: a `Suite` and the BinTEL event stream a host reads.
   def testDeps(soundness: String) = coreDeps(soundness) ++ Seq(
