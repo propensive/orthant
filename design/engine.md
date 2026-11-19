@@ -323,7 +323,7 @@ Every error Orthant raises has a bolt code with the letter `o`.
 | `↯/o.4.12` | an update could not carry an edit onto the store's content |
 | `↯/o.4.13` | there is no view against that change at the point checked out |
 | `↯/o.4.14` | a view against a change was asked for from the value checked out |
-| `↯/o.5.1` | the configuration, or the record of the view, could not be read, or the store is of another format |
+| `↯/o.5.1` | the configuration, or the record of the view, could not be read, the store is of another format, or a name is there twice |
 | `↯/o.5.2` | there is already a store in the directory |
 | `↯/o.6.1` | unrecognised command |
 | `↯/o.6.2` | a command was given the wrong operands |
