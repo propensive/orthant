@@ -211,12 +211,15 @@ object Store:
   def point(space: Space, name: Text): Point raises Error =
     def invalid: Nothing = abort(Error(Reason.Folder(name)))
 
+    // A pair gives a value other than the root, so a point which is no longer at an axis's root
+    // has already had its value there from an earlier pair: no axis is named twice.
     if name == t"root" then space.root else name.cut(t",").fold(space.root): (point, pair) =>
       pair.cut(t"=") match
         case axis :: value :: Nil =>
           val found = space.axes.filter(_.name == axis).head.or(invalid)
           val value2 = value.cut(t"_").join(t"/")
           if !found.has(value2) || value2 == found.root then invalid
+          if point(found) != found.root then invalid
           point.move(found, value2)
 
         case _ =>
@@ -270,6 +273,11 @@ object Store:
 
       . protect:
           Disk.read(config(root)).or(abort(Error(Reason.Missing(root)))).read[Settings in Tel]
+
+    // A store of another version is not read for what can be made of it.
+    if settings.format != Settings.format then
+      val detail = t"the store is of format ${settings.format}, and not ${Settings.format}"
+      abort(Error(Reason.Config(detail)))
 
     val space = settings.space
     val data = t"${folder(root)}/data"

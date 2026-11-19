@@ -963,6 +963,25 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == List(t"↯/o.1.7"))
 
+      test(m"A directory which names an axis twice is a fault"):
+        val store = populated()
+        val folder = t"${store.data}/language=fr,language=fr"
+        Disk.write(t"$folder/guide/other.md", t"Bonjour.\n", store.staging)
+        Store.scan(store.root)(1).map(_.bolt.text)
+
+      . assert(_ == List(t"↯/o.1.7"))
+
+      test(m"A store of a later format is refused"):
+        val store = populated()
+        val file = t"${store.folder}/config.tel"
+        val later = Store.lines(Disk.read(file).or(t"")).map: line =>
+          if line == t"format 1" then t"format 2" else line
+
+        Disk.write(file, Store.text(later), store.staging)
+        code(Store.scan(store.root))
+
+      . assert(_ == t"↯/o.5.1")
+
       test(m"A delta whose lines are not in its parent is a fault"):
         val store = populated()
         Disk.write(t"${store.data}/root/guide/intro.md", t"Something else.\n", store.staging)
