@@ -172,7 +172,7 @@ digit       ::= "0" | … | "9" ;
 ```
 
 Neither may be `root`. The names of the axes of a store MUST differ from one another, as MUST
-the names of the values of one axis. Names are compared as sequences of code points: `FR` and
+the names of the values of one axis (**↯/o.5.1**). Names are compared as sequences of code points: `FR` and
 `fr` are different values.
 
 ### 6.3 Point Directories
@@ -948,7 +948,7 @@ this specification defines; the tool has others, for operations which are not sp
 | **↯/o.4.1** | there is no store | §7.1, §12 |
 | **↯/o.4.5** | a file could not be read, or is not UTF-8 | §5 |
 | **↯/o.4.11** | a strict export found a document which wants attention | §12.3 |
-| **↯/o.5.1** | the configuration could not be read, or is of a format other than 1 | §7 |
+| **↯/o.5.1** | the configuration could not be read, is of a format other than 1, or has a name twice | §6.2, §7 |
 
 A store is **invalid** if any of **↯/o.1.1**–**↯/o.1.8**, **↯/o.2.1**–**↯/o.2.3** or
 **↯/o.5.1** holds of it, or if a file of it is **↯/o.4.5**. The conditions **↯/o.2.7**,

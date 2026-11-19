@@ -279,6 +279,17 @@ object Store:
       val detail = t"the store is of format ${settings.format}, and not ${Settings.format}"
       abort(Error(Reason.Config(detail)))
 
+    // A name which two axes had, or two values of an axis, would name neither.
+    def twice(names: List[Text]): Optional[Text] =
+      names.filter { name => names.count(_ == name) > 1 }.head
+
+    twice(settings.axis.map(_.name)).let: name =>
+      abort(Error(Reason.Config(t"more than one axis is named $name")))
+
+    settings.axis.each: entry =>
+      twice(entry.value.map(_.name)).let: name =>
+        abort(Error(Reason.Config(t"the axis ${entry.name} has more than one value named $name")))
+
     val space = settings.space
     val data = t"${folder(root)}/data"
 

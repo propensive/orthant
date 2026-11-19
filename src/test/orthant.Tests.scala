@@ -982,6 +982,26 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == t"↯/o.5.1")
 
+      test(m"Two axes of one name are refused"):
+        val store = populated()
+        val file = t"${store.folder}/config.tel"
+        val lines = Store.lines(Disk.read(file).or(t""))
+        val twice = lines + List(t"axis", t"  name release", t"  kind custom", t"  prefer own")
+        Disk.write(file, Store.text(twice + List(t"  value", t"    name v1")), store.staging)
+        code(Store.scan(store.root))
+
+      . assert(_ == t"↯/o.5.1")
+
+      test(m"Two values of one name on an axis are refused"):
+        val store = populated()
+        val file = t"${store.folder}/config.tel"
+        val lines = Store.lines(Disk.read(file).or(t""))
+        val twice = lines + List(t"  value", t"    name v2", t"    parent v1")
+        Disk.write(file, Store.text(twice), store.staging)
+        code(Store.scan(store.root))
+
+      . assert(_ == t"↯/o.5.1")
+
       test(m"A delta whose lines are not in its parent is a fault"):
         val store = populated()
         Disk.write(t"${store.data}/root/guide/intro.md", t"Something else.\n", store.staging)
