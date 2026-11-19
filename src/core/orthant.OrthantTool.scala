@@ -217,7 +217,7 @@ object OrthantTool:
 
   // The values a point may be moved to, for the shell to offer; none where there is no store.
   private def values(using Cli): List[Text] =
-    safely(Store.load(Store.find(here))).lay(Nil): store =>
+    safely(Workspace.load(Workspace.find(here))).lay(Nil): store =>
       store.settings.axis.bind(_.value).bind: value => value.name :: value.labels
 
   // The command dispatch. The `@main` entry point and burdock's `externalize` wrapper live alone
@@ -349,7 +349,8 @@ object OrthantTool:
         execute(attempt(todo(operands(rest).map(_()), take)))
 
       case GridCommand() :: rest =>
-        val offered = safely(Store.load(Store.find(here))).lay(Nil)(_.space.axes.map(_.name))
+        val found = safely(Workspace.load(Workspace.find(here)))
+        val offered = found.lay(Nil)(_.space.axes.map(_.name))
         operands(rest).each(_.select(offered))
         execute(attempt(grid(operands(rest).map(_()))))
 
@@ -543,7 +544,8 @@ object OrthantTool:
     Err.println(t"orthant: ${Orthant.bolt(6, 2).label} usage: $synopsis")
     UsageError
 
-  private type Raising[result] = (Tactic[Store.Error], Tactic[Axis.Error]) ?=> result
+  private type Raising[result] =
+    (Tactic[Store.Error], Tactic[Workspace.Error], Tactic[Axis.Error]) ?=> result
 
   // Every command ends here: an error which the store, the axes or a check-in raises is
   // reported with its bolt code, and the command is refused.
@@ -555,19 +557,20 @@ object OrthantTool:
       Refused
 
     recover:
-      case error: Store.Error => refuse(error.bolt, Orthant.prose(error))
-      case error: Axis.Error  => refuse(error.bolt, Orthant.prose(error))
+      case error: Store.Error     => refuse(error.bolt, Orthant.prose(error))
+      case error: Workspace.Error => refuse(error.bolt, Orthant.prose(error))
+      case error: Axis.Error      => refuse(error.bolt, Orthant.prose(error))
 
     . protect(block)
 
   // The directory the command was run in: the client's, not the daemon's.
   private def here(using cli: Cli): Text = cli.workingDirectory.directory()
 
-  private def open()(using Cli): Store raises Store.Error raises Axis.Error =
-    Store.load(Store.find(here))
+  private def open()(using Cli): Workspace raises Store.Error =
+    Workspace.load(Workspace.find(here))
 
   // A point as it is shown: the value on every axis.
-  private def describe(store: Store, point: Point): Text =
+  private def describe(store: Workspace, point: Point): Text =
     if store.space.axes.nil then t"the only point"
     else
       store.space.axes.map: axis => t"${axis.name}=${store.title(axis.name, point(axis))}"
@@ -578,7 +581,7 @@ object OrthantTool:
 
   private def init(operands: List[Text])(using Cli, Stdio): Raising[Exit] =
     val tree = operands.head.or(t"docs")
-    val store = Store.init(here, tree)
+    val store = Workspace.init(here, tree)
     Disk.directory(store.tree)
     Out.println(t"Created an Orthant store in ${store.folder}; its working tree is $tree/")
     Exit.Ok
@@ -666,7 +669,7 @@ object OrthantTool:
     Exit.Ok
 
   private def check()(using Cli, Stdio): Raising[Refused.type | Exit] =
-    val (store, faults) = Store.scan(Store.find(here))
+    val (store, faults) = Workspace.scan(Workspace.find(here))
 
     faults.each: fault => Err.println(t"orthant: ${fault.bolt.label} ${Orthant.prose(fault)}")
 
@@ -692,7 +695,7 @@ object OrthantTool:
 
   // The document a path names: a path within the working tree, relative to the directory the
   // command was run in, or else relative to the working tree.
-  private def document(store: Store, path: Text)(using Cli): Text =
+  private def document(store: Workspace, path: Text)(using Cli): Text =
     val full = if path.starts(t"/") then path else t"$here/$path"
     val prefix = t"${store.tree}/"
     if full.starts(prefix) then full.skip(prefix.length) else path
@@ -727,7 +730,7 @@ object OrthantTool:
         Out.println(t"Checked out ${documents(count)} at $place")
         Exit.Ok
 
-  private def shown(store: Store, mode: Worktree.Mode): Text = mode match
+  private def shown(store: Workspace, mode: Worktree.Mode): Text = mode match
     case Worktree.Mode.Plain  => t""
     case Worktree.Mode.Beside => t", as indirect views"
 
@@ -748,9 +751,9 @@ object OrthantTool:
         val start = store.locate(point, List(from))
         val axis = store.space.axes.filter { axis => start(axis) != point(axis) }.head
 
-        axis.lay(abort(Store.Error(Store.Reason.Unmoved(from)))): axis =>
+        axis.lay(abort(Workspace.Error(Workspace.Reason.Unmoved(from)))): axis =>
           if to != t"" && store.locate(point, List(to)) != point
-          then abort(Store.Error(Store.Reason.Against(axis.name, from)))
+          then abort(Workspace.Error(Workspace.Reason.Against(axis.name, from)))
 
           Worktree.Mode.Against(axis.name, start(axis))
 
@@ -843,7 +846,7 @@ object OrthantTool:
   // What wants doing in the documents at a point, a line for each piece of it. A stale passage
   // is given by its line in the working tree, if the point is the one checked out, and
   // otherwise by its line in the plain document.
-  private def report(store: Store, point: Point, works: List[Survey.Work], here: Boolean)
+  private def report(store: Workspace, point: Point, works: List[Survey.Work], here: Boolean)
     ( using Stdio )
   :   Raising[Unit] =
 
@@ -929,7 +932,9 @@ object OrthantTool:
     . join(t", ")
 
   // The points at or below the values which have work of their own, each with that work.
-  private def agenda(store: Store, values: List[Text]): Raising[List[(Point, List[Survey.Work])]] =
+  private def agenda(store: Workspace, values: List[Text])
+  :   Raising[List[(Point, List[Survey.Work])]] =
+
     store.within(values).bind: point =>
       val works = store.documents.map(Survey.own(store, _, point)).filter(_.wanting)
       if works.nil then Nil else List((point, works))
@@ -939,7 +944,7 @@ object OrthantTool:
 
     if take then Disk.locked(store.lock):
       agenda(store, values).head.lay(Out.println(t"Nothing wants doing.")): (point, works) =>
-        val mode = Survey.approach(store, point)
+        val mode = Worktree.approach(store, point)
         val count = Worktree.checkout(store, point, false, mode)
         val place = t"${describe(store, point)}${shown(store, mode)}"
         Out.println(t"Checked out ${documents(count)} at $place")
@@ -960,7 +965,7 @@ object OrthantTool:
         Out.println(describe(store, point))
 
         works.each: work =>
-          val reach = Survey.reach(seen, work.document, point)
+          val reach = Worktree.reach(seen, work.document, point)
 
           val below =
             if reach == 0 then t""
@@ -971,7 +976,7 @@ object OrthantTool:
 
       found.head.lay(Out.println(t"Nothing wants doing.")): (point, works) =>
         val command = (t"orthant todo" :: values).join(t" ")
-        val mode = Survey.approach(seen, point)
+        val mode = Worktree.approach(seen, point)
         val place = t"${describe(store, point)}${shown(store, mode)}"
         Out.println(t"`$command --checkout` checks out $place")
 

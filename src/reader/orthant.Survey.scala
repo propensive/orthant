@@ -78,27 +78,3 @@ object Survey:
     here.copy
       ( pending = here.pending.filter(!pending.has(_)),
         stale   = here.stale.filter { placement => !stale.has(key(placement)) } )
-
-  // How many other points have, in a document, some of the work which is a point's own there.
-  def reach(store: Store, document: Text, point: Point): Int raises Axis.Error =
-    val mine = own(store, document, point)
-    val stale = mine.stale.map(key)
-
-    store.space.points.count: other =>
-      other != point && above(store, other).has(point) && locally:
-        val theirs = work(store, document, other)
-
-        theirs.pending.exists(mine.pending.has(_)) || theirs.stale.exists: placement =>
-          stale.has(key(placement))
-
-  // How best to look at a point's work: against the change from the value before it on an
-  // axis, if at that value nothing wants doing; or else beside its storage parent.
-  def approach(store: Store, point: Point): Worktree.Mode raises Axis.Error =
-    store.space.storageAxis(point).lay(Worktree.Mode.Plain): storage =>
-      val changes: List[Worktree.Mode] =
-        store.space.axes.filter(_.name != storage.name).bind: axis =>
-          axis.value(point(axis)).parent.lay(Nil): parent =>
-            if sum(store, point.move(axis, parent)).wanting then Nil
-            else List(Worktree.Mode.Against(axis.name, parent))
-
-      changes.head.or(Worktree.Mode.Beside)

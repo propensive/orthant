@@ -23,10 +23,16 @@ import soundness.*
 import soundness.codepages.utf8Codepage
 import soundness.dysasymptotics.linearSize
 import soundness.errorDiagnostics.emptyDiagnostics
+import soundness.filesystemBackends.javaBaseFilesystem
 
 // The working tree: the documents as they are at one point, in a directory where they are
 // edited. Beside the store are kept which point that is, and a pristine copy of each document
 // as it was checked out, by which edits are told from what the store gave.
+// What is checked out into the working tree, as `.orthant/work/view.tel` holds it: the mode of
+// the view, and the value on each axis which is not at its root.
+case class Coordinate(axis: Text, value: Text)
+case class View(mode: Text, coordinate: List[Coordinate], from: Optional[Text] = Unset)
+
 object Worktree:
   enum Kind:
     case Added, Modified, Missing
@@ -59,10 +65,10 @@ object Worktree:
     case Since(value: Text)
     case Origin(axis: Text)
 
-  private def state(store: Store): Text = t"${store.work}/view.tel"
-  private def pristine(store: Store): Text = t"${store.work}/pristine"
+  private def state(store: Workspace): Text = t"${store.work}/view.tel"
+  private def pristine(store: Workspace): Text = t"${store.work}/pristine"
 
-  private def recorded(store: Store): Optional[View] raises Store.Error =
+  private def recorded(store: Workspace): Optional[View] raises Store.Error raises Workspace.Error =
     Disk.read(state(store)).let: text =>
       mitigate:
         case error: Tel.Error => Store.Error(Store.Reason.Config(Orthant.prose(error)))
@@ -70,11 +76,11 @@ object Worktree:
       . protect(text.read[View in Tel])
 
   // The point which is checked out: the root of every axis, until another is.
-  def view(store: Store): Point raises Store.Error raises Axis.Error =
+  def view(store: Workspace): Point raises Store.Error raises Workspace.Error raises Axis.Error =
     recorded(store).lay(store.space.root): view =>
       store.locate(store.space.root, view.coordinate.map { pair => t"${pair.axis}=${pair.value}" })
 
-  def mode(store: Store): Mode raises Store.Error =
+  def mode(store: Workspace): Mode raises Store.Error raises Workspace.Error =
     recorded(store).lay(Mode.Plain): view =>
       if view.mode == t"indirect" then Mode.Beside
       else if view.mode != t"change" then Mode.Plain
@@ -82,7 +88,7 @@ object Worktree:
         case axis :: value :: Nil => Mode.Against(axis, value)
         case _                    => Mode.Plain
 
-  private def record(store: Store, point: Point, mode: Mode): Unit raises Store.Error =
+  private def record(store: Workspace, point: Point, mode: Mode): Unit raises Store.Error =
     val coordinates = store.space.axes.filter { axis => point(axis) != axis.root }.map: axis =>
       Coordinate(axis.name, point(axis))
 
@@ -93,13 +99,13 @@ object Worktree:
 
     Disk.write(state(store), Store.text(Store.lines(view.in[Tel].show)), store.staging)
 
-  private def axis(store: Store, name: Text): Axis raises Store.Error =
+  private def axis(store: Workspace, name: Text): Axis raises Store.Error =
     store.space.axes.filter(_.name == name).head.or(abort(Store.Error(Store.Reason.Unknown(name))))
 
   // A view needs a storage parent to be its reference; one against a change needs the change
   // to be from an ancestor of the point's value, on an axis other than its storage axis.
-  private def admit(store: Store, point: Point, mode: Mode)
-  :   Unit raises Store.Error raises Axis.Error =
+  private def admit(store: Workspace, point: Point, mode: Mode)
+  :   Unit raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val storage = store.space.storageAxis(point)
 
@@ -108,18 +114,18 @@ object Worktree:
         ()
 
       case Mode.Beside =>
-        if storage.absent then abort(Store.Error(Store.Reason.Rootless(store.name(point))))
+        if storage.absent then abort(Workspace.Error(Workspace.Reason.Rootless(store.name(point))))
 
       case Mode.Against(name, value) =>
-        if storage.absent then abort(Store.Error(Store.Reason.Rootless(store.name(point))))
+        if storage.absent then abort(Workspace.Error(Workspace.Reason.Rootless(store.name(point))))
         val found = axis(store, name)
 
         if storage.let(_.name) == name || !found.has(value) || !found.below(point(found), value)
-        then abort(Store.Error(Store.Reason.Against(name, value)))
+        then abort(Workspace.Error(Workspace.Reason.Against(name, value)))
 
   // What the reference of a document's view was, at the earlier value of a view against a
   // change.
-  private def former(store: Store, dossier: Dossier, point: Point, name: Text, value: Text)
+  private def former(store: Workspace, dossier: Dossier, point: Point, name: Text, value: Text)
   :   List[Text] raises Store.Error raises Axis.Error =
 
     store.space.storageParent(point).let: parent =>
@@ -127,7 +133,7 @@ object Worktree:
 
     . or(Nil)
 
-  private def show(store: Store, dossier: Dossier, point: Point, mode: Mode)
+  private def show(store: Workspace, dossier: Dossier, point: Point, mode: Mode)
   :   Optional[List[Text]] raises Store.Error raises Axis.Error =
 
     mode match
@@ -138,13 +144,14 @@ object Worktree:
         Indirect.alterationView(dossier, point, former(store, dossier, point, name, value))
 
   // A document as the working tree shows it at a point, or `Unset` if it is not there.
-  def render(store: Store, document: Text, point: Point, mode: Mode)
+  def render(store: Workspace, document: Text, point: Point, mode: Mode)
   :   Optional[List[Text]] raises Store.Error raises Axis.Error =
 
     show(store, store.dossier(document), point, mode)
 
   // What the lines of a document in the working tree ask for.
-  private def request(store: Store, dossier: Dossier, point: Point, mode: Mode, lines: List[Text])
+  private def request
+    ( store: Workspace, dossier: Dossier, point: Point, mode: Mode, lines: List[Text] )
   :   Indirect.Request raises Store.Error raises Axis.Error raises Indirect.Error =
 
     mode match
@@ -154,11 +161,11 @@ object Worktree:
       case Mode.Against(name, value) =>
         Indirect.alterationRead(dossier, point, former(store, dossier, point, name, value), lines)
 
-  private def lines(file: Text): Optional[List[Text]] raises Store.Error =
+  private def lines(file: Text): Optional[List[Text]] raises Store.Error raises Workspace.Error =
     Disk.read(file).let(Store.lines(_))
 
   // How the working tree differs from what was checked out.
-  def changes(store: Store): List[Change] raises Store.Error =
+  def changes(store: Workspace): List[Change] raises Store.Error raises Workspace.Error =
     val present = Disk.files(store.tree)
     val known = Disk.files(pristine(store))
 
@@ -169,17 +176,17 @@ object Worktree:
       modified.map(Change(_, Kind.Modified)) +
       known.filter(!present.has(_)).map(Change(_, Kind.Missing))
 
-  private def put(file: Text, content: Text, store: Store): Unit raises Store.Error =
+  private def put(file: Text, content: Text, store: Workspace): Unit raises Store.Error =
     if Disk.read(file) != content then Disk.write(file, content, store.staging)
 
   // Makes the working tree the documents at `point`, and gives their number. Edits which are
   // not checked in prevent it, unless they are to be discarded; a file which is in the working
   // tree alone is left there.
-  def checkout(store: Store, point: Point, force: Boolean, mode: Mode = Mode.Plain)
-  :   Int raises Store.Error raises Axis.Error =
+  def checkout(store: Workspace, point: Point, force: Boolean, mode: Mode = Mode.Plain)
+  :   Int raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val pending = changes(store)
-    if !force && !pending.nil then abort(Store.Error(Store.Reason.Edited(pending.size)))
+    if !force && !pending.nil then abort(Workspace.Error(Workspace.Reason.Edited(pending.size)))
     admit(store, point, mode)
 
     val contents: List[(Text, Text)] = store.documents.bind: document =>
@@ -199,20 +206,21 @@ object Worktree:
     contents.size
 
   private def refused
-    ( store: Store, document: Text, place: Point, error: fulminate.Error, bolt: fulminate.Bolt )
-  :   Store.Error =
+    ( store: Workspace, document: Text, place: Point, error: fulminate.Error, bolt: fulminate.Bolt )
+  :   Workspace.Error =
 
-    Store.Error(Store.Reason.Refused(document, store.name(place), Orthant.prose(error), bolt))
+    val detail = Orthant.prose(error)
+    Workspace.Error(Workspace.Reason.Refused(document, store.name(place), detail, bolt))
 
   // The dossier of a document after its lines in the working tree are checked in.
   private def revise
-    ( store:    Store,
+    ( store:    Workspace,
       document: Text,
       point:    Point,
       mode:     Mode,
       reach:    Reach,
       content:  Optional[List[Text]] )
-  :   Dossier raises Store.Error raises Axis.Error =
+  :   Dossier raises Store.Error raises Workspace.Error raises Axis.Error =
 
     mitigate:
       case error: Checkin.Error  => refused(store, document, error.point, error, error.bolt)
@@ -244,8 +252,12 @@ object Worktree:
   // them, and none means all. A missing document is deleted only if `remove` is set. Nothing
   // is written if any document is refused, or if `dry` is set.
   def checkin
-    ( store: Store, paths: List[Text], remove: Boolean, dry: Boolean, reach: Reach = Reach.Below )
-  :   Tally raises Store.Error raises Axis.Error =
+    ( store:  Workspace,
+      paths:  List[Text],
+      remove: Boolean,
+      dry:    Boolean,
+      reach:  Reach = Reach.Below )
+  :   Tally raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val point = view(store)
     val shown = mode(store)
@@ -255,10 +267,10 @@ object Worktree:
       val document = change.document
 
       if render(store, document, point, shown) != lines(t"${pristine(store)}/$document")
-      then abort(Store.Error(Store.Reason.Moved(document)))
+      then abort(Workspace.Error(Workspace.Reason.Moved(document)))
 
       if change.kind == Kind.Added && document.ends(t".delta")
-      then abort(Store.Error(Store.Reason.Suffix(document)))
+      then abort(Workspace.Error(Workspace.Reason.Suffix(document)))
 
     val skipped = selected.filter: change => change.kind == Kind.Missing && !remove
     val stored = selected.filter(!skipped.has(_))
@@ -290,7 +302,7 @@ object Worktree:
 
   // What becomes of each point when `documents` change from what one store has to what
   // another has; the points to which nothing happens are left out.
-  private def effects(before: Store, after: Store, documents: List[Text])
+  private def effects(before: Workspace, after: Workspace, documents: List[Text])
   :   List[Effect] raises Axis.Error =
 
     before.space.points.bind: point =>
@@ -311,7 +323,9 @@ object Worktree:
 
   // The store as it would be if the edits in the working tree were checked in, with the
   // documents whose edits could not be. Nothing is written.
-  def prospect(store: Store): (Store, List[Text]) raises Store.Error raises Axis.Error =
+  def prospect(store: Workspace)
+  :   (Workspace, List[Text]) raises Store.Error raises Workspace.Error raises Axis.Error =
+
     val point = view(store)
     val shown = mode(store)
 
@@ -325,8 +339,8 @@ object Worktree:
 
   // The line of a document in the working tree, counted from one, at which a hunk in place at
   // the point checked out begins, in the mode the working tree is shown in.
-  def line(store: Store, document: Text, placement: Placement)
-  :   Int raises Store.Error raises Axis.Error =
+  def line(store: Workspace, document: Text, placement: Placement)
+  :   Int raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val point = view(store)
     val dossier = store.dossier(document)
@@ -369,8 +383,8 @@ object Worktree:
   // Marks as checked every stale passage of the documents at the point which is checked out,
   // and gives each such document with the number of its passages. The documents must have no
   // edits which are not checked in.
-  def confirm(store: Store, paths: List[Text])
-  :   List[(Text, Int)] raises Store.Error raises Axis.Error =
+  def confirm(store: Workspace, paths: List[Text])
+  :   List[(Text, Int)] raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val point = view(store)
     val shown = mode(store)
@@ -383,7 +397,7 @@ object Worktree:
       if stale.nil then Nil else List((document, stale.size))
 
     val blocked = edited.filter: change => found.exists(_(0) == change.document)
-    if !blocked.nil then abort(Store.Error(Store.Reason.Edited(blocked.size)))
+    if !blocked.nil then abort(Workspace.Error(Workspace.Reason.Edited(blocked.size)))
 
     found.fold(store): (store, entry) =>
       val document = entry(0)
@@ -400,7 +414,9 @@ object Worktree:
   // Shows the working tree in another mode, and gives the number of documents written. Edits
   // which are not checked in are kept: each edited document is shown as it would be if its
   // edits were checked in, beside a pristine copy in which they are not.
-  def refer(store: Store, next: Mode): Int raises Store.Error raises Axis.Error =
+  def refer(store: Workspace, next: Mode)
+  :   Int raises Store.Error raises Workspace.Error raises Axis.Error =
+
     val point = view(store)
     val shown = mode(store)
     admit(store, point, next)
@@ -430,7 +446,9 @@ object Worktree:
   // Brings the working tree up to the store, where the store has changed beneath it, and gives
   // the documents written. An edit which is not checked in is carried onto the document as the
   // store now has it; if any cannot be, nothing is written.
-  def update(store: Store): List[Text] raises Store.Error raises Axis.Error =
+  def update(store: Workspace)
+  :   List[Text] raises Store.Error raises Workspace.Error raises Axis.Error =
+
     val point = view(store)
     val shown = mode(store)
     val known = Disk.files(pristine(store))
@@ -453,7 +471,7 @@ object Worktree:
               copy.lay(if tree == fresh then fresh else Unset): copy =>
                 Retro.carry(Retro.changes(copy, tree), copy, fresh)
 
-          if carried.absent then abort(Store.Error(Store.Reason.Clash(document)))
+          if carried.absent then abort(Workspace.Error(Workspace.Reason.Clash(document)))
           List((document, fresh, true, carried))
 
     plans.each: (document, fresh, write, tree) =>
@@ -470,7 +488,9 @@ object Worktree:
   // The edits which are not checked in: for each document, the lines which differ from its
   // pristine copy, those taken out marked `-` and those put in marked `+`, each run under the
   // number of the line it begins at.
-  def differences(store: Store, paths: List[Text]): List[(Change, List[Text])] raises Store.Error =
+  def differences(store: Workspace, paths: List[Text])
+  :   List[(Change, List[Text])] raises Store.Error raises Workspace.Error =
+
     changes(store).filter { change => chosen(change.document, paths) }.map: change =>
       val old = lines(t"${pristine(store)}/${change.document}").or(Nil)
       val edited = lines(t"${store.tree}/${change.document}").or(Nil)
@@ -487,18 +507,34 @@ object Worktree:
 
   // Writes every document at a point, as its plain content, beneath a directory, and gives
   // their number. If `strict` is set, nothing is written while any of them wants attention.
-  def publish(store: Store, point: Point, directory: Text, strict: Boolean)
-  :   Int raises Store.Error raises Axis.Error =
+  def publish(store: Workspace, point: Point, directory: Text, strict: Boolean)
+  :   Int raises Store.Error =
 
-    val contents: List[(Text, Text)] = store.documents.bind: document =>
-      store.dossier(document).content(point).lay(Nil): lines => List((document, Store.text(lines)))
+    store.publish(point, Disk.path(directory), strict)
 
-    if strict then
-      val wanting = store.documents.count: document => Survey.work(store, document, point).wanting
-      if wanting > 0 then abort(Store.Error(Store.Reason.Wanting(wanting, store.name(point))))
+  private def key(placement: Placement): (Point, List[Text]) =
+    (placement.origin, placement.hunk.lines)
 
-    Disk.directory(directory)
+  // How many other points have, in a document, some of the work which is a point's own there.
+  def reach(store: Workspace, document: Text, point: Point): Int raises Axis.Error =
+    val mine = Survey.own(store, document, point)
+    val stale = mine.stale.map(key)
 
-    contents.each: (document, content) => put(t"$directory/$document", content, store)
+    store.space.points.count: other =>
+      other != point && Survey.above(store, other).has(point) && locally:
+        val theirs = Survey.work(store, document, other)
 
-    contents.size
+        theirs.pending.exists(mine.pending.has(_)) || theirs.stale.exists: placement =>
+          stale.has(key(placement))
+
+  // How best to look at a point's work: against the change from the value before it on an
+  // axis, if at that value nothing wants doing; or else beside its storage parent.
+  def approach(store: Workspace, point: Point): Mode raises Axis.Error =
+    store.space.storageAxis(point).lay(Mode.Plain): storage =>
+      val changes: List[Mode] =
+        store.space.axes.filter(_.name != storage.name).bind: axis =>
+          axis.value(point(axis)).parent.lay(Nil): parent =>
+            if Survey.sum(store, point.move(axis, parent)).wanting then Nil
+            else List(Mode.Against(axis.name, parent))
+
+      changes.head.or(Mode.Beside)

@@ -122,8 +122,15 @@ object settings:
     mvn"dev.propensive:gossamer-core:$soundness",            // Text operations
     mvn"dev.propensive:contingency-core:$soundness")         // raises, recover
 
-  // The tool: the store on disk, the working tree and the command line.
-  def coreDeps(soundness: String) = engineDeps(soundness) ++ Seq(
+  // The reader: a store read from wherever it is kept, strictly, and never written. It is what
+  // another tool depends on, so it has the filesystem and the configuration's format, and no more.
+  def readerDeps(soundness: String) = engineDeps(soundness) ++ Seq(
+    mvn"dev.propensive:galilei-jvm:$soundness",              // the filesystem
+    mvn"dev.propensive:hieroglyph-core:$soundness",          // charEncoders/charDecoders
+    mvn"dev.propensive:stratiform-core:$soundness")          // the TEL configuration
+
+  // The tool: the store as it is changed, the working tree and the command line.
+  def coreDeps(soundness: String) = readerDeps(soundness) ++ Seq(
     mvn"dev.propensive:aviation-core:$soundness",           // the daily upgrade check
     mvn"dev.propensive:burdock-core:$soundness",            // externalize + the repackager
     mvn"dev.propensive:digression-ansi:$soundness",          // stack-trace diagnostics
@@ -132,12 +139,9 @@ object settings:
     mvn"dev.propensive:eucalyptus-core:$soundness",          // logging.silentLogging
     mvn"dev.propensive:exoskeleton-completions:$soundness",  // cli + tab-completion
     mvn"dev.propensive:gastronomy-core:$soundness",          // the upgrade's digest check
-    mvn"dev.propensive:galilei-jvm:$soundness",              // the filesystem
-    mvn"dev.propensive:hieroglyph-core:$soundness",          // charEncoders/charDecoders
     mvn"dev.propensive:monotonous-core:$soundness",          // alphabets.hexLowerCase
     mvn"dev.propensive:octogenarian-native:$soundness",      // reading a repository's tags
     mvn"dev.propensive:parasite-core:$soundness",            // the task of the daily check
-    mvn"dev.propensive:stratiform-core:$soundness",          // the TEL configuration
     mvn"dev.propensive:telekinesis-core:$soundness",         // fetching the upgrade manifest
     mvn"dev.propensive:telekinesis-jvm:$soundness",          // httpBackends.javaNetHttp
     mvn"dev.propensive:urticose-core:$soundness")            // HttpUrl
@@ -187,8 +191,8 @@ trait Component(dependencies: PublishModule*) extends Fork:
     mill.javalib.Assembly.Rule.AppendPattern("META-INF/givens/.*"),
     mill.javalib.Assembly.Rule.AppendPattern("META-INF/services/.*"))
 
-// Mixed into the library module that is released (`core`) — the module the `launcher` then pulls
-// back in as a published coordinate. Releases go to GitHub Releases, by a tag (see release.sh in
+// Mixed into the library modules that are released (`engine`, `reader` and `core`) — the modules
+// the `launcher` then pulls back in as published coordinates. Releases go to GitHub Releases, by a tag (see release.sh in
 // propensive/.github), with `publishLocal` producing the jar and its POM; the Sonatype module is
 // retained only for its POM machinery. Every setting mirrors the Soundness build: the same
 // `dev.propensive` organization, URL, Apache-2.0 licence, GitHub SCM and developer, plus the empty
@@ -220,19 +224,25 @@ trait Publishing extends Fork, SonatypeCentralPublishModule:
 
 object orthant extends Project:
   // The engine: axes, points, hunks, re-basing and check-in over an abstract store. It performs
-  // no IO, so that another tool (Fuel, say) can read a store through it. Released as
-  // `dev.propensive:orthant-engine`.
+  // no IO. Released as `dev.propensive:orthant-engine`.
   object engine extends Component(), Publishing:
     def mvnDeps = Task(settings.engineDeps(deps.soundness()))
 
-  // The `orthant` command-line tool: the store on disk, the working tree and the subcommands,
-  // over the engine. Released as `dev.propensive:orthant-core`.
-  object core extends Component(engine), Publishing:
+  // The reader of spec/store.md §12: a store opened from a directory, or from anything else
+  // which has entries and bytes, and the operations which read it. It writes nothing. This is
+  // the library by which another tool (Fuel, say) reads a store. Released as
+  // `dev.propensive:orthant-reader`.
+  object reader extends Component(engine), Publishing:
+    def mvnDeps = Task(settings.readerDeps(deps.soundness()))
+
+  // The `orthant` command-line tool: the store as it is changed, the working tree and the
+  // subcommands, over the reader and the engine. Released as `dev.propensive:orthant-core`.
+  object core extends Component(reader, engine), Publishing:
     def mvnDeps = Task(settings.coreDeps(deps.soundness()))
 
   // The invocation point, ALONE in its own module (`src/launcher/orthant_launcher.scala` — just
-  // the `@main def orthant = externalize(OrthantTool.run())`). It depends on `core` and `engine`
-  // NOT as Mill `moduleDeps` but as PUBLISHED coordinates, so coursier puts the byte-identical
+  // the `@main def orthant = externalize(OrthantTool.run())`). It depends on `core`, `reader` and
+  // `engine` NOT as Mill `moduleDeps` but as PUBLISHED coordinates, so coursier puts the byte-identical
   // released jars on the compile classpath that `externalize` hashes; the repackager then
   // externalizes them into on-demand downloads instead of inlining.
   //
@@ -241,6 +251,7 @@ object orthant extends Project:
   object launcher extends Component():
     def mvnDeps = Task:
       Seq(mvn"dev.propensive:orthant-core:${core.publishVersion()}",
+          mvn"dev.propensive:orthant-reader:${reader.publishVersion()}",
           mvn"dev.propensive:orthant-engine:${engine.publishVersion()}")
         ++ settings.coreDeps(deps.soundness())
 
@@ -254,18 +265,18 @@ object orthant extends Project:
   // `META-INF/services/probably.Suite` index a host reads to discover suites, so the plugin must
   // run on this module or `fume run -c` finds nothing. `orthant.runTests` is a plain-`java` entry
   // point that drives `Tests.invoke` in-process, for `make test-plain`.
-  object test extends Component(core, engine):
+  object test extends Component(core, reader, engine):
     def mvnDeps = Task(settings.testDeps(deps.soundness()))
     def scalacPluginMvnDeps = Task(Seq(mvn"dev.propensive:beneficence-plugin:${deps.soundness()}"))
     def finalMainClass = "orthant.runTests"
 
-// The release: the library module's jar, with its POM and ivy.xml embedded under
+// The release: each library module's jar, with its POM and ivy.xml embedded under
 // `META-INF/maven/<group>/<artifactId>/`, named `<artifactId>-<version>.jar`, exactly as the
 // Soundness build stages its own. A jar so staged is all a consumer needs: the shared sync script
 // (propensive/.github) reconstructs the ivy2 layout coursier resolves from, which is how `make
 // snapshot` publishes an unreleased build for a dependent repository to pin.
 object release extends Module:
-  def modules: Seq[PublishModule] = Seq(orthant.engine, orthant.core)
+  def modules: Seq[PublishModule] = Seq(orthant.engine, orthant.reader, orthant.core)
 
   private def withDescriptors(source: os.Path, target: os.Path, entries: Seq[(String, os.Path)])
   :   Unit =

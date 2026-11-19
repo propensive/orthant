@@ -4,7 +4,7 @@ name: CI
 # Soundness-application workflow — see propensive/.github for what it does and what it expects of
 # this repository (the ./mill wrapper, etc/shared, and the pins in etc/refs).
 #
-# The launcher resolves its libraries (orthant-core, orthant-engine) as published coordinates, so
+# The launcher resolves its libraries (orthant-core, orthant-reader, orthant-engine) as published coordinates, so
 # every publishing module is published locally first (`__.publishLocal`).
 
 on:
@@ -17,7 +17,7 @@ jobs:
   build:
     uses: propensive/.github/.github/workflows/scala-ci.yml@main
     with:
-      compile:       orthant.engine.compile orthant.core.compile
+      compile:       orthant.engine.compile orthant.reader.compile orthant.core.compile
       publish_local: __
       assembly:      orthant.launcher.assembly
       test_assembly: orthant.test.assembly
