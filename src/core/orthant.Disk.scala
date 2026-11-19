@@ -52,6 +52,10 @@ object Disk:
 
     . protect(block)
 
+  // The directory which a path names, as the reader takes a store's home.
+  def path(directory: Text): Path on Linux raises Store.Error =
+    access(directory)(directory.as[Path on Linux])
+
   // The directory a file is in.
   def parent(file: Text): Text =
     val parts = file.cut(t"/")

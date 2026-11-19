@@ -67,8 +67,10 @@ object Sync:
     recur(pattern.cut(t"*"), name, true)
 
   // Runs a block with the references of the repository which the directory is in.
-  def reading[result](directory: Text)(block: Refs => result): result raises Store.Error =
-    val missing = Store.Error(Store.Reason.Repository(t"there is none above $directory"))
+  def reading[result](directory: Text)(block: Refs => result)
+  :   result raises Store.Error raises Workspace.Error =
+
+    val missing = Workspace.Error(Workspace.Reason.Repository(t"there is none above $directory"))
 
     def found(current: Text): Text =
       if Disk.exists(t"$current/.git") then current
@@ -78,9 +80,9 @@ object Sync:
     val root = found(directory)
 
     mitigate:
-      case error: Git.Error  => Store.Error(Store.Reason.Repository(Orthant.prose(error)))
-      case error: Io.Error   => Store.Error(Store.Reason.Repository(Orthant.prose(error)))
-      case error: Path.Error => Store.Error(Store.Reason.Repository(Orthant.prose(error)))
+      case error: Git.Error  => Workspace.Error(Workspace.Reason.Repository(Orthant.prose(error)))
+      case error: Io.Error   => Workspace.Error(Workspace.Reason.Repository(Orthant.prose(error)))
+      case error: Path.Error => Workspace.Error(Workspace.Reason.Repository(Orthant.prose(error)))
 
     . protect:
         root.as[Path on Linux].open[Git.Worktree](): worktree ?=>
@@ -107,8 +109,8 @@ object Sync:
   // The nearest of the axis's commits which are ancestors of a commit, or the commit itself if
   // `inclusive` is set: the root's name if there is none.
   private def nearest
-    ( store: Store, entry: AxisEntry, hash: Text, refs: Refs, inclusive: Boolean, name: Text )
-  :   Text raises Store.Error raises Axis.Error =
+    ( store: Workspace, entry: AxisEntry, hash: Text, refs: Refs, inclusive: Boolean, name: Text )
+  :   Text raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val above = entry.value.filter: value =>
       value.commit.let: commit =>
@@ -124,13 +126,13 @@ object Sync:
     nearest match
       case value :: Nil => value.name
       case Nil          => entry.value.filter(_.parent.absent).head.let(_.name).or(t"")
-      case _            => abort(Store.Error(Store.Reason.Lineage(name, entry.name)))
+      case _            => abort(Workspace.Error(Workspace.Reason.Lineage(name, entry.name)))
 
   // The store in which a value of an axis has another name: its records are moved, and the
   // values beneath it follow.
   private def rename
-    ( store: Store, axis: Text, old: Text, name: Text, change: ValueEntry => ValueEntry )
-  :   Store raises Store.Error raises Axis.Error =
+    ( store: Workspace, axis: Text, old: Text, name: Text, change: ValueEntry => ValueEntry )
+  :   Workspace raises Store.Error raises Workspace.Error raises Axis.Error =
 
     def written(value: Text): Text = t"$axis=${value.cut(t"/").join(t"_")}"
 
@@ -159,26 +161,28 @@ object Sync:
           else if value.parent == old then value.copy(parent = name)
           else value)
 
-    Store.load(store.configure(store.settings.copy(axis = entries)).root)
+    Workspace.load(store.configure(store.settings.copy(axis = entries)).root)
 
-  private def add(store: Store, axis: Text, value: ValueEntry)
-  :   Store raises Store.Error raises Axis.Error =
+  private def add(store: Workspace, axis: Text, value: ValueEntry)
+  :   Workspace raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val entries = store.settings.axis.map: entry =>
       if entry.name == axis then entry.copy(value = entry.value + List(value)) else entry
 
     store.configure(store.settings.copy(axis = entries))
 
-  private def git(store: Store, axis: Text): AxisEntry raises Store.Error =
+  private def git(store: Workspace, axis: Text)
+  :   AxisEntry raises Store.Error raises Workspace.Error =
+
     val entry = store.entry(axis).or(abort(Store.Error(Store.Reason.Unknown(axis))))
-    if entry.kind != t"git" then abort(Store.Error(Store.Reason.Kind(axis)))
+    if entry.kind != t"git" then abort(Workspace.Error(Workspace.Reason.Kind(axis)))
     entry
 
   // The store after an axis has taken up the repository's new tags, and the branches named,
   // with a line for each thing done. With no branch named and none tracked, the branch which is
   // checked out is tracked.
-  def apply(store: Store, axis: Text, refs: Refs, track: List[Text])
-  :   (Store, List[Text]) raises Store.Error raises Axis.Error =
+  def apply(store: Workspace, axis: Text, refs: Refs, track: List[Text])
+  :   (Workspace, List[Text]) raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val entry = git(store, axis)
     val pattern = entry.pattern.or(t"*")
@@ -214,7 +218,7 @@ object Sync:
         value.branch.or(false) && value.parent == parent && refs.branches.exists: (branch, tip) =>
           branch == value.name && (tip == hash || refs.ancestor(hash, tip))
 
-      def added: (Store, List[Text]) =
+      def added: (Workspace, List[Text]) =
         val entry = ValueEntry(short(hash), parent, label = label, commit = hash)
         val note = t"added $title beneath ${store.title(axis, parent)}"
         (add(store, axis, entry), notes + List(note))
@@ -239,9 +243,9 @@ object Sync:
 
     wanted.filter(!tracked.has(_)).fold(tagged): (state, branch) =>
       val (store, notes) = state
-      if !Store.valid(branch) then abort(Store.Error(Store.Reason.Name(branch)))
+      if !Store.valid(branch) then abort(Workspace.Error(Workspace.Reason.Name(branch)))
 
-      def unknown: Nothing = abort(Store.Error(Store.Reason.Branch(branch)))
+      def unknown: Nothing = abort(Workspace.Error(Workspace.Reason.Branch(branch)))
       val tip = refs.branches.filter(_(0) == branch).head.let(_(1)).or(unknown)
 
       val parent = nearest(store, git(store, axis), tip, refs, true, branch)
@@ -251,8 +255,8 @@ object Sync:
 
   // The store in which a tag is a value beneath a parent which is given, for a tag whose
   // nearest ancestor a sync could not choose.
-  def pin(store: Store, axis: Text, tag: Text, parent: Text, refs: Refs)
-  :   Store raises Store.Error raises Axis.Error =
+  def pin(store: Workspace, axis: Text, tag: Text, parent: Text, refs: Refs)
+  :   Workspace raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val entry = git(store, axis)
 
@@ -262,6 +266,6 @@ object Sync:
     val above = store.named(axis, parent).or(abort(Store.Error(Store.Reason.Unknown(parent))))
 
     if entry.value.exists(_.commit == hash)
-    then abort(Store.Error(Store.Reason.ValueExists(axis, tag)))
+    then abort(Workspace.Error(Workspace.Reason.ValueExists(axis, tag)))
 
     add(store, axis, ValueEntry(short(hash), above, label = tag, commit = hash))

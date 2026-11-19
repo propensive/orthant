@@ -92,12 +92,50 @@ orthant grid                 # every language at every release, at a glance
 A check-in of the source documents likewise says which translations it left with lines to
 translate or passages to check.
 
+## Reading a store from another program
+
+Each release has three libraries beside the tool, as jars among its assets on GitHub:
+`orthant-engine`, which derives content and does no IO; `orthant-reader`, which opens a store
+and reads it; and `orthant-core`, which is the tool. A program which only reads a store depends
+on `dev.propensive:orthant-reader`, which brings the engine with it, and of Soundness needs no
+more than the filesystem and TEL. A build which resolves Soundness from its releases resolves
+Orthant's in the same way.
+
+`orthant-reader` is a reader as §12 of `spec/store.md` defines one. It writes nothing.
+
+```scala
+import orthant.*, soundness.*
+import filesystemBackends.javaBaseFilesystem
+
+val store = Store.open(home)                        // `home` has `.orthant` in it
+val point = store.point(List(t"fr", t"release=v2"))
+store.content(t"guide/intro.md", point)             // the lines, or `Unset` if it is not there
+```
+
+A store is opened from a value of any type which is `Perusable`: one which has directories
+with named entries, and files with bytes. A `Path` of a filesystem is, and an instance for
+another type reads a store from wherever that keeps one, such as a commit of a git repository.
+A store, once opened, is a value: all it answers is of the one state in which it was read. An
+error is a `Store.Error`, raised with the bolt code the specification gives it.
+
+| §12 | In `orthant-reader` |
+|---|---|
+| `open`, `find` | `Store.open(home)`, `Store.find(directory)` |
+| `format`, `axes`, `points` | `store.format`, `store.axes` and `store.entry(axis)`, `store.points` |
+| `point` | `store.point(terms, from)`; or a `Point` made directly |
+| `documents`, `content`, `text` | `store.documents`, `store.content(document, point)`, `store.text(document, point)` |
+| `faults` | `store.faults`; `Store.inspect(home)` reads a store which `open` refuses, to list them |
+| `rendition`, `view` | `store.rendition(document, point)`, `store.view(document, point)` |
+| `storage-parent`, `origins` | `store.storageParent(point)`, `store.origins(point)` |
+| `work`, `own-work` | `store.work(document, point)`, `store.work(point)`, `store.ownWork(document, point)` |
+| `export` | `store.publish(point, directory, strict)` |
+
+`checked-out` is the tool's, since what is checked out is no part of the store.
+
 ## Building
 
 ```
 make test                 # compile and run the tests with fume
 make test-plain           # the same, without fume
-make orthant HINTS=propensive/soundness,propensive/proscala   # the native executable
+make orthant              # the native executable
 ```
-
-The `HINTS` override is needed until `propensive/orthant` has a release.

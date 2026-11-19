@@ -22,9 +22,10 @@ import soundness.*
 
 // The invocation point, alone in its own build module. `externalize` (from burdock) records the
 // SHA-256 of every jar on this module's compile classpath into `META-INF/burdock.deps` at compile
-// time. Because the `launcher` module depends on `orthant-core` and `orthant-engine` as published
-// coordinates (see `build.mill`), the jar bytes on the classpath match the released ones, so
-// `soundness.repackage` rewrites them into on-demand downloads rather than inlining their classes.
+// time. Because the `launcher` module depends on `orthant-core`, `orthant-reader` and
+// `orthant-engine` as published coordinates (see `build.mill`), the jar bytes on the classpath
+// match the released ones, so `soundness.repackage` rewrites them into on-demand downloads rather
+// than inlining their classes.
 // The whole command dispatch lives in `orthant.OrthantTool.run`.
 @main
 def orthant(): Unit = externalize(OrthantTool.run())

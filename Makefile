@@ -15,10 +15,10 @@ assembly: publishLocal
 
 # Releases are cut by tagging, not by make. Tag a commit CI has passed, with `git tag -s X.Y.Z &&
 # git push origin X.Y.Z`: the tag fires .github/workflows/release.yml, which runs the shared
-# release.sh in propensive/.github. That publishes the orthant-core jar, then the repackaged and
-# signed `orthant` executables, the dispatcher, the installers and the upgrade manifest. What this
-# repository needs beyond the common path is declared in etc/release. This target survives only to
-# say so.
+# release.sh in propensive/.github. That publishes the orthant-engine, orthant-reader and
+# orthant-core jars, then the repackaged and signed `orthant` executables, the dispatcher, the
+# installers and the upgrade manifest. What this repository needs beyond the common path is
+# declared in etc/release. This target survives only to say so.
 release:
 	@echo "Releases are triggered by tags, not by make. Once CI has passed on the commit:" >&2
 	@echo "" >&2

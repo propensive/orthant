@@ -68,8 +68,3 @@ case class Settings(format: Int, tree: Text, axis: List[AxisEntry]):
         Value(value.name, value.parent, value.translation.or(false))
 
       Axis(entry.name, values, Settings.preference(entry.prefer))
-
-// What is checked out into the working tree, as `.orthant/work/view.tel` holds it: the mode of
-// the view, and the value on each axis which is not at its root.
-case class Coordinate(axis: Text, value: Text)
-case class View(mode: Text, coordinate: List[Coordinate], from: Optional[Text] = Unset)
