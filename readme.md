@@ -10,6 +10,17 @@ optionally beside a reference version, and checks edits back in.
 
 Orthant is built on [Soundness](https://soundness.dev/) alone.
 
+## Installing it
+
+```sh
+curl -fsSL https://propensive.dev/orthant | sh
+```
+
+In PowerShell, `irm https://propensive.dev/orthant | iex`. Either installs the latest release:
+as `orthant` in `~/.local/bin`, or on Windows as `orthant.exe` in
+`%LOCALAPPDATA%\Programs\orthant`; or in `ORTHANT_INSTALL_DIR`, if that is set.
+`orthant upgrade` replaces it with a newer one.
+
 ## Using it
 
 ```
