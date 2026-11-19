@@ -6,7 +6,7 @@ is stored as the lines that differ. The `orthant` tool checks a version out into
 optionally beside a reference version, and checks edits back in.
 
 - `design/engine.md`: how content is derived and changed.
-- `spec/store.md`: the format of the `.orthant/` directory.
+- `spec/store.md`: the specification of the `.orthant/` directory, and of a reader of it.
 
 Orthant is built on [Soundness](https://soundness.dev/) alone.
 
