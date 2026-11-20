@@ -109,15 +109,15 @@ object Tests extends Suite(m"Orthant tests"):
 
       test(m"A delta file is read as its hunks"):
         Delta.parse(text) match
-          case Holding.Delta(axis, hunks) => (axis, hunks.size, hunks.map(_.stale))
-          case _                          => (t"", 0, Nil)
+          case Folio.Delta(axis, hunks) => (axis, hunks.size, hunks.map(_.stale))
+          case _                        => (t"", 0, Nil)
 
       . assert(_ == (t"language", 3, List(false, true, false)))
 
       test(m"Context, document ends and empty lines are read"):
         Delta.parse(text) match
-          case Holding.Delta(_, hunks) => hunks.last
-          case _                       => Unset
+          case Folio.Delta(_, hunks) => hunks.last
+          case _                     => Unset
 
       . assert: hunk =>
           hunk ==
@@ -194,16 +194,16 @@ object Tests extends Suite(m"Orthant tests"):
       val sixth = fifth.confirm(at(t"fr/FR", t"v2"))
 
       test(m"The root holds the document whole"):
-        first.holdings.at(at(t"en/GB", t"v1"))
+        first.folios.at(at(t"en/GB", t"v1"))
 
-      . assert(_ == Holding.Base(english))
+      . assert(_ == Folio.Base(english))
 
       test(m"A release stores only the line it changes"):
-        second.holdings.at(at(t"en/GB", t"v2"))
+        second.folios.at(at(t"en/GB", t"v2"))
 
-      . assert: holding =>
-          holding ==
-            Holding.Delta
+      . assert: folio =>
+          folio ==
+            Folio.Delta
               ( t"release",
                 List(Hunk(List(t"that is the question."), List(t"that is the query."))) )
 
@@ -213,9 +213,9 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ == english2)
 
       test(m"A translation is one hunk for each paragraph"):
-        third.holdings.at(at(t"fr/FR", t"v1")) match
-          case Holding.Delta(axis, hunks) => (axis, hunks.map(_.replaced))
-          case _                          => (t"", Nil)
+        third.folios.at(at(t"fr/FR", t"v1")) match
+          case Folio.Delta(axis, hunks) => (axis, hunks.map(_.replaced))
+          case _                        => (t"", Nil)
 
       . assert(_ == (t"language", List(List(be), List(question), List(exit))))
 
@@ -240,9 +240,9 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ == quebec)
 
       test(m"A dialect stores only the line it alters"):
-        fourth.holdings.at(at(t"fr/CA", t"v1")) match
-          case Holding.Delta(axis, hunks) => hunks.map(_.replaced)
-          case _                          => Nil
+        fourth.folios.at(at(t"fr/CA", t"v1")) match
+          case Folio.Delta(axis, hunks) => hunks.map(_.replaced)
+          case _                        => Nil
 
       . assert(_ == List(List(telle)))
 
@@ -269,8 +269,8 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ == (french, 0))
 
       test(m"The new translation is stored as one hunk at the release"):
-        fifth.holdings.at(at(t"fr/FR", t"v2")) match
-          case Holding.Delta(axis, hunks) =>
+        fifth.folios.at(at(t"fr/FR", t"v2")) match
+          case Folio.Delta(axis, hunks) =>
             hunks.map: hunk => (hunk.former, hunk.replaced, hunk.lines)
 
           case _ =>
@@ -294,9 +294,9 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ == french2)
 
       test(m"Checking in unchanged content changes nothing"):
-        sixth.checkin(at(t"fr/FR", t"v2"), french2).holdings
+        sixth.checkin(at(t"fr/FR", t"v2"), french2).folios
 
-      . assert(_ == sixth.holdings)
+      . assert(_ == sixth.folios)
 
       val exeunt = List(be, t"", question, t"", t"Exeunt.")
 
@@ -391,7 +391,7 @@ object Tests extends Suite(m"Orthant tests"):
         test(m"A view checked in as it was changes nothing"):
           def same(dossier: Dossier, point: Point): Boolean =
             val view = Indirect.view(dossier, point).or(Nil)
-            dossier.holdings == Indirect.checkin(dossier, point, view).holdings
+            dossier.folios == Indirect.checkin(dossier, point, view).folios
 
           List(same(third, fr1), same(third, fr2), same(partial, fr1))
 
@@ -624,9 +624,9 @@ object Tests extends Suite(m"Orthant tests"):
         . checkin(fr1, List(linux, lancez, macos, ouvrez))
 
       test(m"A hunk on a repeated line is anchored by the line before it"):
-        installers.holdings.at(fr1) match
-          case Holding.Delta(_, hunks) => hunks.map(_.before)
-          case _                       => Nil
+        installers.folios.at(fr1) match
+          case Folio.Delta(_, hunks) => hunks.map(_.before)
+          case _                     => Nil
 
       . assert(_ == List(List(linux), List(macos)))
 
@@ -711,7 +711,7 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ == (List(t"a", t"b", t"c"), List(t"A", t"B", t"c"), List(t"A", t"B", t"C")))
 
       test(m"It is stored at that value, and the value it was made at holds nothing new"):
-        Retro.since(base, v3, List(t"A", t"B", t"C"), v2).holdings.at(v3) == base.holdings.at(v3)
+        Retro.since(base, v3, List(t"A", t"B", t"C"), v2).folios.at(v3) == base.folios.at(v3)
 
       . assert(_ == true)
 
@@ -749,9 +749,9 @@ object Tests extends Suite(m"Orthant tests"):
         . checkin(second, List(t"a", t"p", t"x", t"q", t"b"))
 
       test(m"Two insertions are two hunks while a line lies between them"):
-        apart.holdings.at(second) match
-          case Holding.Delta(_, hunks) => hunks.map(_.lines)
-          case _                       => Nil
+        apart.folios.at(second) match
+          case Folio.Delta(_, hunks) => hunks.map(_.lines)
+          case _                     => Nil
 
       . assert(_ == List(List(t"p"), List(t"q")))
 
@@ -763,9 +763,9 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ == List(t"a", t"p", t"q", t"b"))
 
       test(m"They are stored as one hunk, since two at one place could not both apply"):
-        met.holdings.at(second) match
-          case Holding.Delta(_, hunks) => hunks.map(_.lines)
-          case _                       => Nil
+        met.folios.at(second) match
+          case Folio.Delta(_, hunks) => hunks.map(_.lines)
+          case _                     => Nil
 
       . assert(_ == List(List(t"p", t"q")))
 
@@ -918,8 +918,8 @@ object Tests extends Suite(m"Orthant tests"):
         val store = populated()
         edit(store, t"guide/intro.md", t"Edited.\n")
         Worktree.checkin(store, Nil, false, true)
-        val reloaded = Workspace.load(store.root).dossier(t"guide/intro.md").holdings
-        reloaded == store.dossier(t"guide/intro.md").holdings
+        val reloaded = Workspace.load(store.root).dossier(t"guide/intro.md").folios
+        reloaded == store.dossier(t"guide/intro.md").folios
 
       . assert(_ == true)
 
@@ -1302,6 +1302,7 @@ object Tests extends Suite(m"Orthant tests"):
     suite(m"Reading a store"):
       import soundness.codepages.utf8Codepage
       import soundness.filesystemBackends.javaBaseFilesystem
+      import soundness.systems.javaBaseSystem
 
       def bytes(text: Text): Data = utf8Codepage.encoded(text)
 
@@ -1867,15 +1868,15 @@ object Trials:
           after.content(other) != dossier.content(other) &&
             !(space.below(other, point) && scope(other))
 
-        val unwritten = after.holdings.values.exists:
-          case delta: Holding.Delta => Delta.parse(Delta.serialize(delta)) != delta
-          case _                    => false
+        val unwritten = after.folios.values.exists:
+          case delta: Folio.Delta => Delta.parse(Delta.serialize(delta)) != delta
+          case _                  => false
 
         val failure: Optional[Text] =
           if after.content(point) != lines then t"$label: the content is not the lines"
           else if !moved.nil then t"$label: a point outside the scope changed"
           else if unwritten then t"$label: a delta is not written as it is read"
-          else if after.checkin(point, lines, scope).holdings != after.holdings
+          else if after.checkin(point, lines, scope).folios != after.folios
           then t"$label: checking in the same content changed the store"
           else Unset
 
@@ -1889,14 +1890,14 @@ object Trials:
   // A dossier in another space, holding what `dossier` holds, at the point each point becomes.
   private def moved(dossier: Dossier, space: Space, become: Point => Point): Dossier =
     points.fold(Dossier(space)): (result, point) =>
-      result.hold(become(point), dossier.holdings.at(point))
+      result.hold(become(point), dossier.folios.at(point))
 
   // Invariant 5: the order of the hunks in a delta does not matter.
   def unordered(dossier: Dossier): Optional[Text] =
     val reversed = points.fold(dossier): (result, point) =>
-      dossier.holdings.at(point) match
-        case Holding.Delta(axis, hunks) => result.hold(point, Holding.Delta(axis, hunks.reverse))
-        case _                          => result
+      dossier.folios.at(point) match
+        case Folio.Delta(axis, hunks) => result.hold(point, Folio.Delta(axis, hunks.reverse))
+        case _                        => result
 
     first:
       points.map: point =>
@@ -1957,8 +1958,8 @@ object Trials:
     points.map: point =>
       val parent = space.storageParent(point).let(dossier.content(_))
 
-      dossier.holdings.at(point) match
-        case Holding.Delta(_, hunks) =>
+      dossier.folios.at(point) match
+        case Folio.Delta(_, hunks) =>
           parent.let: content =>
             val located = hunks.bind: hunk =>
               Rebase.occurrences(hunk, content).map: start => (start, hunk)
@@ -2049,11 +2050,11 @@ object Solo:
     val parent: Optional[List[Text]] | Text =
       space.storageParent(point).let(applied(dossier, _))
 
-    dossier.holdings.at(point) match
-      case Holding.Base(lines) => lines
-      case Holding.Absent(_)   => Unset
+    dossier.folios.at(point) match
+      case Folio.Base(lines) => lines
+      case Folio.Absent(_)   => Unset
 
-      case Holding.Delta(_, hunks) => parent match
+      case Folio.Delta(_, hunks) => parent match
         case content: List[Text] @unchecked =>
           val located = hunks.bind: hunk =>
             Rebase.occurrences(hunk, content).map: start => (start, hunk)

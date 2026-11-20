@@ -25,13 +25,13 @@ import soundness.sortingAlgorithms.timsort
 
 // Every version of one document: what the store holds for it at each point of a space. A
 // dossier is a value; a check-in gives a new one.
-case class Dossier(space: Space, holdings: Map[Point, Holding] = Map()):
+case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
   // Renditions are derived from each other, many times over, so each is computed once.
   private val memo: scala.collection.mutable.HashMap[Point, Optional[Rendition]] =
     scala.collection.mutable.HashMap()
 
-  def hold(point: Point, holding: Optional[Holding]): Dossier =
-    Dossier(space, holding.lay(holdings.omit(point))(holdings.define(point, _)))
+  def hold(point: Point, folio: Optional[Folio]): Dossier =
+    Dossier(space, folio.lay(folios.omit(point))(folios.define(point, _)))
 
   // The content of the document at a point, or `Unset` if it does not exist there.
   def content(point: Point): Optional[List[Text]] raises Axis.Error = rendition(point).let(_.lines)
@@ -49,21 +49,21 @@ case class Dossier(space: Space, holdings: Map[Point, Holding] = Map()):
 
   private def derive(point: Point): Optional[Rendition] raises Axis.Error =
     def base: Optional[Rendition] =
-      holdings.at(point).let(_.only { case Holding.Base(lines) => Rendition(lines) })
+      folios.at(point).let(_.only { case Folio.Base(lines) => Rendition(lines) })
 
     space.storageParent(point).lay(base): parent =>
       val axis = space.storageAxis(point).or(panic(m"a point with a storage parent has an axis"))
       val origins = specific(space.origins(point))
 
-      // The most specific holding which is not a delta decides whether the document exists,
+      // The most specific folio which is not a delta decides whether the document exists,
       // unless a delta more specific than it cancels it.
       def decide(todo: List[Point], deltas: List[Point]): Optional[Rendition] = todo match
-        case origin :: tail => holdings.at(origin) match
-          case Holding.Base(lines)  if deltas.nil  => Rendition(lines)
-          case Holding.Absent(_)    if deltas.nil  => Unset
-          case Holding.Delta(_, _)                 => decide(tail, origin :: deltas)
-          case Holding.Base(_) | Holding.Absent(_) => apply(deltas.reverse)
-          case _                                   => decide(tail, deltas)
+        case origin :: tail => folios.at(origin) match
+          case Folio.Base(lines)  if deltas.nil => Rendition(lines)
+          case Folio.Absent(_)    if deltas.nil => Unset
+          case Folio.Delta(_, _)                => decide(tail, origin :: deltas)
+          case Folio.Base(_) | Folio.Absent(_)  => apply(deltas.reverse)
+          case _                                => decide(tail, deltas)
 
         case _ =>
           apply(deltas.reverse)
@@ -71,7 +71,7 @@ case class Dossier(space: Space, holdings: Map[Point, Holding] = Map()):
       def apply(deltas: List[Point]): Optional[Rendition] = content(parent).let: reference =>
         val placed: List[Placement | Issue] = deltas.bind: origin =>
           val hunks: List[Hunk] =
-            holdings.at(origin).let(_.only { case Holding.Delta(_, hunks) => hunks }).or(Nil)
+            folios.at(origin).let(_.only { case Folio.Delta(_, hunks) => hunks }).or(Nil)
 
           val source: Optional[List[Text]] =
             if origin == point then reference else space.storageParent(origin).let(content(_))
@@ -162,21 +162,21 @@ case class Dossier(space: Space, holdings: Map[Point, Holding] = Map()):
   // The dossier in which the content at `point` is `lines`, or in which the document is absent
   // there. Only what is held at `point` differs; every point below it follows.
   def store(point: Point, lines: Optional[List[Text]]): Dossier raises Axis.Error =
-    space.storageAxis(point).lay(hold(point, lines.let(Holding.Base(_)))): axis =>
+    space.storageAxis(point).lay(hold(point, lines.let(Folio.Base(_)))): axis =>
       val bare = hold(point, Unset)
 
       def gone: Dossier =
-        if bare.content(point).absent then bare else hold(point, Holding.Absent(axis.name))
+        if bare.content(point).absent then bare else hold(point, Folio.Absent(axis.name))
 
       lines.lay(gone): lines =>
-        val delta: Dossier = holdings.at(point) match
-          case Holding.Delta(_, _) => this
-          case _                   => hold(point, Holding.Delta(axis.name, Nil))
+        val delta: Dossier = folios.at(point) match
+          case Folio.Delta(_, _) => this
+          case _                 => hold(point, Folio.Delta(axis.name, Nil))
 
-        delta.rendition(point).lay(hold(point, Holding.Base(lines))): rendition =>
+        delta.rendition(point).lay(hold(point, Folio.Base(lines))): rendition =>
           val keep = axis.preference == Preference.Own
           val hunks = Inscription.hunks(rendition, lines, point, keep)
-          def held(hunks: List[Hunk]): Dossier = hold(point, Holding.Delta(axis.name, hunks))
+          def held(hunks: List[Hunk]): Dossier = hold(point, Folio.Delta(axis.name, hunks))
 
           // A hunk without which the content is the same, and no more of it wants attention,
           // says nothing an inherited one does not.
@@ -223,7 +223,7 @@ case class Dossier(space: Space, holdings: Map[Point, Holding] = Map()):
           . map: placement => (placement.start, placement.hunk)
 
         val hunks = (kept + checked).order { (start, hunk) => hunk.rank(start) }.map(_(1))
-        if stale.nil then this else hold(point, Holding.Delta(axis.name, hunks))
+        if stale.nil then this else hold(point, Folio.Delta(axis.name, hunks))
 
   // Whether the point's content is a translation of its storage parent's.
   def translation(point: Point): Boolean raises Axis.Error =
@@ -254,9 +254,9 @@ case class Dossier(space: Space, holdings: Map[Point, Holding] = Map()):
             then start < placement.start && placement.start < end
             else placement.start < end && start < placement.end
 
-        val held = holdings.at(point) match
-          case Holding.Base(_) | Holding.Absent(_) => true
-          case _                                   => false
+        val held = folios.at(point) match
+          case Folio.Base(_) | Folio.Absent(_) => true
+          case _                               => false
 
         if free.nil || held || !translation(point) then this else
           val kept: List[(Int, Hunk)] =
@@ -268,7 +268,7 @@ case class Dossier(space: Space, holdings: Map[Point, Holding] = Map()):
             (start, Inscription.anchor(Hunk(same, same), start, rendition.reference))
 
           val hunks = (kept + added).order { (start, hunk) => hunk.rank(start) }.map(_(1))
-          hold(point, Holding.Delta(axis.name, hunks))
+          hold(point, Folio.Delta(axis.name, hunks))
 
   // The dossier in which a hunk stored at `point` which only takes out the lines `start` to
   // `end` of its storage parent's content, and one stored there which only puts lines in at
@@ -307,7 +307,7 @@ case class Dossier(space: Space, holdings: Map[Point, Holding] = Map()):
                   List((taking.start, Inscription.anchor(whole, taking.start, rendition.reference)))
 
               val ordered = hunks.order { (start, hunk) => hunk.rank(start) }.map(_(1))
-              val united = dossier.hold(point, Holding.Delta(axis.name, ordered))
+              val united = dossier.hold(point, Folio.Delta(axis.name, ordered))
 
               val same = !space.points.exists: other =>
                 united.content(other) != dossier.content(other) ||
@@ -352,8 +352,8 @@ case class Dossier(space: Space, holdings: Map[Point, Holding] = Map()):
   // from what it was in `former` to what it is now. A hunk whose lines were deleted is dropped.
   private def follow(former: Dossier, point: Point): Dossier raises Axis.Error =
     space.storageParent(point).lay(this): parent =>
-      holdings.at(point) match
-        case Holding.Delta(axis, hunks) =>
+      folios.at(point) match
+        case Folio.Delta(axis, hunks) =>
           former.content(parent).lay(this): old =>
             content(parent).lay(this): next =>
               if old == next then this else
@@ -376,7 +376,7 @@ case class Dossier(space: Space, holdings: Map[Point, Holding] = Map()):
                     (start, Inscription.anchor(hunk, start, next))
 
                 val ordered = moved.order { (start, hunk) => hunk.rank(start) }.map(_(1))
-                hold(point, Holding.Delta(axis, ordered + unlocated))
+                hold(point, Folio.Delta(axis, ordered + unlocated))
 
         case _ =>
           this

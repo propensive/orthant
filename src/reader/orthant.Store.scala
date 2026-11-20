@@ -264,30 +264,30 @@ object Store:
             val document = if delta then file.keep(file.length - 6) else file
             val dossier = dossiers.at(document).or(Dossier(space))
 
-            val holding: Holding | Error = attempt:
+            val folio: Folio | Error = attempt:
               val gone = Error(Reason.Access(shown, t"it is no longer there"))
               val content = lines(decode(shown, source.data(home, path).or(abort(gone))))
-              if dossier.holdings.defines(point) then abort(Error(Reason.Both(shown)))
+              if dossier.folios.defines(point) then abort(Error(Reason.Both(shown)))
 
-              if !delta then Holding.Base(content) else
-                val holding = parse(shown, content)
+              if !delta then Folio.Base(content) else
+                val folio = parse(shown, content)
 
-                val axis = holding match
-                  case Holding.Delta(axis, _) => axis
-                  case Holding.Absent(axis)   => axis
-                  case _                      => t""
+                val axis = folio match
+                  case Folio.Delta(axis, _) => axis
+                  case Folio.Absent(axis)   => axis
+                  case _                    => t""
 
                 if space.storageAxis(point).let(_.name) != axis
                 then abort(Error(Reason.Storage(shown, axis)))
 
-                holding
+                folio
 
-            holding match
+            folio match
               case error: Error =>
                 (dossiers, error :: faults)
 
-              case holding: Holding =>
-                (dossiers.define(document, dossier.hold(point, holding)), faults)
+              case folio: Folio =>
+                (dossiers.define(document, dossier.hold(point, folio)), faults)
 
     new Store(settings, space, dossiers, faults.reverse)
 
@@ -298,14 +298,14 @@ object Store:
     store.omitted.head.let(abort(_))
     store
 
-  private def parse(file: Text, content: List[Text]): Holding raises Error =
+  private def parse(file: Text, content: List[Text]): Folio raises Error =
     mitigate:
       case error: Delta.Error => Error(Reason.Format(file, Orthant.prose(error), error.bolt))
 
     . protect:
         Delta.parse(content) match
-          case delta: Holding.Delta   => delta
-          case absent: Holding.Absent => absent
+          case delta: Folio.Delta   => delta
+          case absent: Folio.Absent => absent
 
 // A store, as it was when it was read: the configuration, the space its axes span, and every
 // document's dossier, by the document's path. `omitted` is what was wrong with the records which

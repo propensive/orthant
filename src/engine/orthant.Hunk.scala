@@ -44,7 +44,7 @@ case class Hunk
 
 // What the store holds for a document at a point: its full text, the fact of its absence, or the
 // hunks by which it differs from the storage parent's content, on the named storage axis.
-enum Holding:
+enum Folio:
   case Base(lines: List[Text])
   case Absent(axis: Text)
   case Delta(axis: Text, hunks: List[Hunk])

@@ -31,7 +31,7 @@ import soundness.filesystemOptions.dereferenceSymlinks
 import soundness.filesystemOptions.moveAtomically
 import soundness.filesystemOptions.overwritePreexisting
 import soundness.gitBackends.soundnessGit
-import soundness.pathInterfaces.pathOnLinux
+import soundness.pathInterfaces.pathOnLocal
 import soundness.sortingAlgorithms.timsort
 import soundness.systems.javaBaseSystem
 
@@ -152,8 +152,8 @@ object Sync:
           case error: Path.Error => failed(error)
 
         . protect:
-            val target = t"${store.data}/$moved".as[Path on Linux]
-            t"${store.data}/$directory".as[Path on Linux].moveTo(target)
+            val target = t"${store.data}/$moved".as[Path on Local]
+            t"${store.data}/$directory".as[Path on Local].moveTo(target)
 
     val entries = store.settings.axis.map: entry =>
       if entry.name != axis then entry else
@@ -226,7 +226,7 @@ object Sync:
 
       released.head.lay(added): branch =>
         val held = store.dossiers.values.to[List].exists: dossier =>
-          dossier.holdings.keys.to[List].exists: point => point.coordinates.at(axis) == branch.name
+          dossier.folios.keys.to[List].exists: point => point.coordinates.at(axis) == branch.name
 
         val renamed = rename(store, axis, branch.name, short(hash),
             _.copy(label = label, commit = hash, branch = Unset))

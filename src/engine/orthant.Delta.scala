@@ -45,11 +45,11 @@ object Delta:
 
   private def mark(sigil: Text, line: Text): Text = if line == t"" then sigil else t"$sigil $line"
 
-  def serialize(record: Holding.Delta | Holding.Absent): List[Text] = record match
-    case Holding.Absent(axis) =>
+  def serialize(record: Folio.Delta | Folio.Absent): List[Text] = record match
+    case Folio.Absent(axis) =>
       List(t"orthant $version $axis absent")
 
-    case Holding.Delta(axis, hunks) =>
+    case Folio.Delta(axis, hunks) =>
       t"orthant $version $axis" :: hunks.bind: hunk =>
         List
           ( List(t""),
@@ -74,7 +74,7 @@ object Delta:
     case t"+"  => 6
     case _     => Unset
 
-  def parse(text: List[Text]): Holding.Delta | Holding.Absent raises Error =
+  def parse(text: List[Text]): Folio.Delta | Folio.Absent raises Error =
     def hunks(todo: List[Text], number: Int, stage0: Int, hunk: Hunk, done: List[Hunk])
     :   List[Hunk] =
 
@@ -118,11 +118,11 @@ object Delta:
       case header :: tail => header.cut(t" ") match
         case List(t"orthant", number, axis) =>
           if number != version.show then abort(Error(1, Reason.Version))
-          Holding.Delta(axis, hunks(tail, 2, -1, Hunk(Nil, Nil), Nil).map(tidy))
+          Folio.Delta(axis, hunks(tail, 2, -1, Hunk(Nil, Nil), Nil).map(tidy))
 
         case List(t"orthant", number, axis, t"absent") =>
           if number != version.show then abort(Error(1, Reason.Version))
-          Holding.Absent(axis)
+          Folio.Absent(axis)
 
         case _ =>
           abort(Error(1, Reason.Header))
