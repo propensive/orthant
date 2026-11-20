@@ -22,6 +22,7 @@ import proscenium.{List, Nil, Map}
 import soundness.*
 import soundness.errorDiagnostics.emptyDiagnostics
 import soundness.filesystemBackends.javaBaseFilesystem
+import soundness.systems.javaBaseSystem
 
 // A store as the tool has it: on a disk, beneath a directory, where it is changed as well as
 // read. It is read by the reader (`Store`, which it is), and what is here besides is the
@@ -179,10 +180,10 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
   val lock: Text = t"$work/lock"
   val tree: Text = t"$root/${settings.tree}"
 
-  private def file(point: Point, document: Text, holding: Optional[Holding]): Optional[Text] =
-    holding.let:
-      case Holding.Base(_) => t"$data/${name(point)}/$document"
-      case _               => t"$data/${name(point)}/$document.delta"
+  private def file(point: Point, document: Text, folio: Optional[Folio]): Optional[Text] =
+    folio.let:
+      case Folio.Base(_) => t"$data/${name(point)}/$document"
+      case _             => t"$data/${name(point)}/$document.delta"
 
   private def holding(dossiers: Map[Text, Dossier]): Workspace =
     Workspace(root, new Store(settings, space, dossiers, omitted))
@@ -191,30 +192,30 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
   // value alone where one axis has it.
   def locate(from: Point, values: List[Text]): Point raises Store.Error = point(values, from)
 
-  // The store in which a document has the dossier given; the files of each point whose holding
+  // The store in which a document has the dossier given; the files of each point whose folio
   // differs are written, or deleted.
   def save(document: Text, updated: Dossier): Workspace raises Store.Error =
     val former = dossier(document)
 
     points.each: point =>
-      val old = former.holdings.at(point)
-      val holding = updated.holdings.at(point)
+      val old = former.folios.at(point)
+      val folio = updated.folios.at(point)
 
-      if old != holding then
-        val target = file(point, document, holding)
+      if old != folio then
+        val target = file(point, document, folio)
 
         file(point, document, old).let: path => if path != target then Disk.remove(path, data)
 
         target.let: path =>
-          val content: List[Text] = holding match
-            case Holding.Base(lines)    => lines
-            case delta: Holding.Delta   => Delta.serialize(delta)
-            case absent: Holding.Absent => Delta.serialize(absent)
-            case _                      => Nil
+          val content: List[Text] = folio match
+            case Folio.Base(lines)    => lines
+            case delta: Folio.Delta   => Delta.serialize(delta)
+            case absent: Folio.Absent => Delta.serialize(absent)
+            case _                    => Nil
 
           Disk.write(path, Store.text(content), staging)
 
-    val present = updated.holdings.keys.to[List].nil
+    val present = updated.folios.keys.to[List].nil
     holding(if present then dossiers.omit(document) else dossiers.define(document, updated))
 
   // The store with a new configuration, which is written.
@@ -224,7 +225,7 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
 
     // Each dossier is of the space it was read in, so it is made again in the new one.
     val moved = documents.fold(Map[Text, Dossier]()): (moved, document) =>
-      moved.define(document, Dossier(space, dossier(document).holdings))
+      moved.define(document, Dossier(space, dossier(document).folios))
 
     Workspace(root, new Store(settings, space, moved, omitted))
 
@@ -266,9 +267,9 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
     if !settings.axis.exists(_.name == axis) then abort(Store.Error(Store.Reason.Unknown(axis)))
 
     val stored = dossiers.values.to[List].exists: dossier =>
-      dossier.holdings.values.to[List].exists:
-        case Holding.Delta(name, hunks) => name == axis && !hunks.nil
-        case _                          => false
+      dossier.folios.values.to[List].exists:
+        case Folio.Delta(name, hunks) => name == axis && !hunks.nil
+        case _                        => false
 
     val name = if parent then t"parent" else t"own"
     val former = settings.axis.filter(_.name == axis).head.let(_.prefer).or(name)

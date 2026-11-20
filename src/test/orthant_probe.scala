@@ -47,12 +47,12 @@ def probe(seeds: Int*): Unit =
             t"      @${placement.start}-${placement.end} from ${name(placement.origin)}" +
               t" ${if placement.fresh then t"fresh" else t"stale"} ${show(placement.lines)}"
 
-      dossier.holdings.at(point).let:
-        case delta: Holding.Delta =>
+      dossier.folios.at(point).let:
+        case delta: Folio.Delta =>
           Delta.serialize(delta).each: line => Out.println(t"      $line")
 
-        case Holding.Base(lines)    => Out.println(t"      base ${show(lines)}")
-        case absent: Holding.Absent => Out.println(t"      absent")
+        case Folio.Base(lines)    => Out.println(t"      base ${show(lines)}")
+        case absent: Folio.Absent => Out.println(t"      absent")
 
   if seeds.isEmpty then List.range(1, 41).each: seed =>
     Out.println(t"$seed: ${trial(seed, 25).or(t"ok")}")
@@ -77,8 +77,8 @@ def probe(seeds: Int*): Unit =
         dump(dossier.store(point, lines), related)
 
         safely(dossier.checkin(point, lines, scope)).let: once =>
-          once.holdings.values.each:
-            case delta: Holding.Delta if Delta.parse(Delta.serialize(delta)) != delta =>
+          once.folios.values.each:
+            case delta: Folio.Delta if Delta.parse(Delta.serialize(delta)) != delta =>
               Out.println(t"not written as read: ${delta.toString}")
               Delta.serialize(delta).each: line => Out.println(t"      $line")
 
@@ -86,7 +86,7 @@ def probe(seeds: Int*): Unit =
               ()
 
           val twice = once.checkin(point, lines, scope)
-          def differs(other: Point): Boolean = once.holdings.at(other) != twice.holdings.at(other)
+          def differs(other: Point): Boolean = once.folios.at(other) != twice.folios.at(other)
           Out.println(t"checked in once, where a second differs:")
           dump(once, differs)
           Out.println(t"checked in twice:")
