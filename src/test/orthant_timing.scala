@@ -86,3 +86,38 @@ def timingCheckin(root: String, count: Int): Unit =
         say:
           document.s+" at "+store.name(point).s+" ("+lines.size.toString+" lines): unchanged "+first+
             " (same records: "+unchanged.toString+"), one line changed "+since(again)+" (ok: "+ok.toString+")"
+
+// Does what `check`, `export` at every point and `status` at every point do, on a store on disk,
+// and times each: `java -cp <test jar> orthant.timingCommands <store's home> <directory>`.
+@main
+def timingCommands(root: String, target: String): Unit =
+  import strategies.throwUnsafely
+  def now: Long = java.lang.System.nanoTime
+  def since(start: Long): String = ((now - start)/1000000L).toString+"ms"
+  def say(text: String): Unit = java.lang.System.out.nn.println(text)
+  val start = now
+  val store = Workspace.load(root.tt)
+  say("loaded and checked "+store.documents.size.toString+" documents in "+since(start))
+
+  store.space.points.each: point =>
+    val begin = now
+    val count = Worktree.publish(store, point, target.tt+t"/"+store.name(point), false)
+    val exported = since(begin)
+    val again = now
+    val sum = Survey.sum(store, point)
+
+    say:
+      store.name(point).s+": exported "+count.toString+" in "+exported+"; "+sum.pending.toString+
+        " pending, "+sum.stale.toString+" stale, "+sum.faults.toString+" faults in "+since(again)
+
+  say("total "+since(start))
+
+// Prints a document of a store on disk at the point whose directory is named, `root` for the
+// root: `java -cp <test jar> orthant.catDocument <store's home> <document> <point>`.
+@main
+def catDocument(root: String, document: String, name: String): Unit =
+  import strategies.throwUnsafely
+  val store = Store.inspect(Disk.path(root.tt))
+  val point = store.points.filter { point => store.name(point) == name.tt }.head.or(panic(m"no such point"))
+  val lines = store.dossier(document.tt).content(point).or(Nil)
+  java.lang.System.out.nn.print(Store.text(lines).s)
