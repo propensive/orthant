@@ -26,7 +26,7 @@ import soundness.collationComparable
 import soundness.collations.codepointCollation
 import soundness.errorDiagnostics.emptyDiagnostics
 import soundness.filesystemBackends.javaBaseFilesystem
-import soundness.filesystemOptions.createNonexistentParents
+import soundness.filesystemOptions.createParents
 import soundness.filesystemOptions.deleteRecursively
 import soundness.filesystemOptions.dereferenceSymlinks
 import soundness.filesystemOptions.moveAtomically

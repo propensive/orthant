@@ -21,7 +21,7 @@ package orthant
 // Probably has an `Axis` of its own, for spreading a test over values; here the name is Orthant's.
 import orthant.Axis
 import proscenium.{List, Nil}
-import soundness.*
+import soundness.{Holding as _, *}
 import soundness.dysasymptotics.linearSize
 import soundness.errorDiagnostics.emptyDiagnostics
 import soundness.sortingAlgorithms.timsort

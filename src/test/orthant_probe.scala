@@ -19,7 +19,7 @@
 package orthant
 
 import proscenium.List
-import soundness.*
+import soundness.{Holding as _, *}
 import soundness.dysasymptotics.linearSize
 import soundness.stdios.fileDescriptorStdio
 import soundness.termcapDefinitions.basicTermcap

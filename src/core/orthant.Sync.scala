@@ -25,7 +25,7 @@ import soundness.collations.codepointCollation
 import soundness.dysasymptotics.linearSize
 import soundness.errorDiagnostics.emptyDiagnostics
 import soundness.filesystemBackends.javaBaseFilesystem
-import soundness.filesystemOptions.createNonexistentParents
+import soundness.filesystemOptions.createParents
 import soundness.filesystemOptions.deleteRecursively
 import soundness.filesystemOptions.dereferenceSymlinks
 import soundness.filesystemOptions.moveAtomically
@@ -33,6 +33,7 @@ import soundness.filesystemOptions.overwritePreexisting
 import soundness.gitBackends.soundnessGit
 import soundness.pathInterfaces.pathOnLinux
 import soundness.sortingAlgorithms.timsort
+import soundness.systems.javaBaseSystem
 
 // Following a git repository with an axis. A tag which the axis's pattern takes becomes a
 // value, named by the start of its commit's hash and labelled with the tag, beneath the nearest
@@ -85,7 +86,7 @@ object Sync:
       case error: Path.Error => Workspace.Error(Workspace.Reason.Repository(Orthant.prose(error)))
 
     . protect:
-        root.as[Path on Linux].open[Git.Worktree](): worktree ?=>
+        root.as[Path on Local].open[Git.Worktree](): worktree ?=>
           val known = scala.collection.mutable.HashMap[(Text, Text), Boolean]()
 
           def ancestor(upper: Text, lower: Text): Boolean =

@@ -19,7 +19,7 @@
 package orthant
 
 import proscenium.{List, Nil, `::`}
-import soundness.*
+import soundness.{Holding as _, *}
 
 // The text of a delta file (`spec/store.md`): a header naming the format version and the storage
 // axis, then hunks, each after a blank line, every line of which begins with a sigil.

@@ -19,7 +19,7 @@
 package orthant
 
 import proscenium.{List, Nil}
-import soundness.*
+import soundness.{Holding as _, *}
 
 // One stored change: some consecutive lines of the storage parent's content, `replaced`, give way
 // to `lines`. The lines of context `before` and `after` it, with `start` and `end` where the

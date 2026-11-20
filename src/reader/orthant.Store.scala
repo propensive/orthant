@@ -19,7 +19,7 @@
 package orthant
 
 import proscenium.{List, Nil, Map, `::`}
-import soundness.*
+import soundness.{Holding as _, *}
 import soundness.codepages.utf8Codepage
 import soundness.collationComparable
 import soundness.collations.codepointCollation
