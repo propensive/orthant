@@ -30,6 +30,9 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
   private val memo: scala.collection.mutable.HashMap[Point, Optional[Rendition]] =
     scala.collection.mutable.HashMap()
 
+  private val unplaced: scala.collection.mutable.HashMap[Point, List[Int]] =
+    scala.collection.mutable.HashMap()
+
   def hold(point: Point, folio: Optional[Folio]): Dossier =
     Dossier(space, folio.lay(folios.omit(point))(folios.define(point, _)))
 
@@ -387,6 +390,12 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
   // The lines of the storage parent's content, counted from nought, which a translation has yet
   // to replace: those which are not blank, and which no hunk takes the place of.
   def pending(point: Point): List[Int] raises Axis.Error =
+    unplaced.get(point).getOrElse:
+      val result = uncovered(point)
+      unplaced(point) = result
+      result
+
+  private def uncovered(point: Point): List[Int] raises Axis.Error =
     if !translation(point) then Nil else rendition(point).lay(Nil): rendition =>
       val reference = rendition.base
       val covered = new scala.Array[Boolean](reference.size)

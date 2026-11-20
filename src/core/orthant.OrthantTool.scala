@@ -217,8 +217,8 @@ object OrthantTool:
 
   // The values a point may be moved to, for the shell to offer; none where there is no store.
   private def values(using Cli): List[Text] =
-    safely(Workspace.load(Workspace.find(here))).lay(Nil): store =>
-      store.settings.axis.bind(_.value).bind: value => value.name :: value.labels
+    safely(Workspace.settings(Workspace.find(here))).lay(Nil): settings =>
+      settings.axis.bind(_.value).bind: value => value.name :: value.labels
 
   // The command dispatch. The `@main` entry point and burdock's `externalize` wrapper live alone
   // in the `launcher` module, which depends on this module as a published coordinate.
@@ -349,8 +349,8 @@ object OrthantTool:
         execute(attempt(todo(operands(rest).map(_()), take)))
 
       case GridCommand() :: rest =>
-        val found = safely(Workspace.load(Workspace.find(here)))
-        val offered = found.lay(Nil)(_.space.axes.map(_.name))
+        val found = safely(Workspace.settings(Workspace.find(here)))
+        val offered = found.lay(Nil)(_.axis.map(_.name))
         operands(rest).each(_.select(offered))
         execute(attempt(grid(operands(rest).map(_()))))
 

@@ -44,8 +44,7 @@ object Survey:
     dossier.rendition(point).lay(Work(document, 0, Nil, Nil, 0)): rendition =>
       val total = if dossier.translation(point) then rendition.reference.count(_ != t"") else 0
 
-      val pending =
-        dossier.pending(point).bind: index => rendition.reference.excerpt(index, index + 1)
+      val pending = dossier.pending(point).map(rendition.base(_))
 
       val stale = rendition.issues.sweep { case Issue.Stale(placement) => placement }
 
@@ -72,9 +71,9 @@ object Survey:
   def own(store: Store, document: Text, point: Point): Work raises Axis.Error =
     val here = work(store, document, point)
     val others = above(store, point).map(work(store, document, _))
-    val pending = others.bind(_.pending)
-    val stale = others.bind(_.stale.map(key))
+    val pending = others.bind(_.pending).stdlib.toSet
+    val stale = others.bind(_.stale.map(key)).stdlib.toSet
 
     here.copy
-      ( pending = here.pending.filter(!pending.has(_)),
-        stale   = here.stale.filter { placement => !stale.has(key(placement)) } )
+      ( pending = here.pending.filter(!pending.contains(_)),
+        stale   = here.stale.filter { placement => !stale.contains(key(placement)) } )

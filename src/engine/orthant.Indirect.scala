@@ -80,22 +80,37 @@ object Indirect:
   // The reference with the hunks in place. `pending` marks the shared lines as yet to be
   // translated.
   def render(reference: List[Text], placements: List[Placement], pending: Boolean): List[Text] =
-    def shared(lines: List[Text]): List[Text] = lines.map: line =>
-      if line == t"" then t"" else if pending then t"? $line" else t"  $line"
+    render(Content(reference), placements, pending)
 
-    def recur(todo: List[Placement], position: Int): List[Text] = todo match
-      case placement :: tail =>
-        val own = if placement.fresh then placement.lines else placement.hunk.lines
-        val former = if placement.fresh then Nil else placement.hunk.former
+  def render(reference: Content, placements: List[Placement], pending: Boolean): List[Text] =
+    val buffer = scala.collection.mutable.ListBuffer[Text]()
 
-        shared(reference.excerpt(position, placement.start)) + former.map(mark(t"!", _)) +
-          reference.excerpt(placement.start, placement.end).map(mark(t"-", _)) +
-          own.map(mark(t"+", _)) + recur(tail, placement.end)
+    def shared(from: Int, to: Int): Unit =
+      var index = from
 
-      case _ =>
-        shared(reference.excerpt(position, reference.size))
+      while index < to do
+        val line = reference(index)
+        buffer += (if line == t"" then t"" else if pending then t"? $line" else t"  $line")
+        index += 1
 
-    recur(placements, 0)
+    var position = 0
+
+    placements.each: placement =>
+      val own = if placement.fresh then placement.lines else placement.hunk.lines
+      val former = if placement.fresh then Nil else placement.hunk.former
+      shared(position, placement.start)
+      former.each { line => buffer += mark(t"!", line) }
+      var index = placement.start
+
+      while index < placement.end do
+        buffer += mark(t"-", reference(index))
+        index += 1
+
+      own.each { line => buffer += mark(t"+", line) }
+      position = placement.end
+
+    shared(position, reference.size)
+    List.from(buffer.toList)
 
   // The reference of a document's view at a point: its storage parent's content, or nothing
   // where the document is held in full, or the storage parent has none.
@@ -107,10 +122,7 @@ object Indirect:
   def view(dossier: Dossier, point: Point): Optional[List[Text]] raises Axis.Error =
     dossier.rendition(point).let: rendition =>
       if rendition.reference.nil && rendition.placements.nil then rendition.lines.map(mark(t"+", _))
-      else render(rendition.reference, rendition.placements, dossier.translation(point))
-
-  private case class Reading
-    ( parts: List[Shared | Passage] = Nil, position: Int = 0, phase: Int = 0, number: Int = 1 )
+      else render(rendition.base, rendition.placements, dossier.translation(point))
 
   // The view in which each `?` line that `+` lines follow, with nothing between but other `?`
   // and `-` lines, is a `-` line: what follows it is its translation.
@@ -134,36 +146,52 @@ object Indirect:
       case t"+" => 3
       case _    => 0
 
-    promote(view).fold(Reading()): (reading, line) =>
+    // The lines of the passage which is open are gathered last first, and put in order when
+    // it closes.
+    def close(part: Shared | Passage): Shared | Passage = part match
+      case passage: Passage =>
+        passage.copy
+          ( former = passage.former.reverse, replaced = passage.replaced.reverse,
+            lines = passage.lines.reverse )
+
+      case shared =>
+        shared
+
+    val done = scala.collection.mutable.ListBuffer[Shared | Passage]()
+    var current: Optional[Passage] = Unset
+    var position = 0
+    var last = 0
+    var number = 1
+
+    promote(view).each: line =>
       val sigil = line.keep(1)
       val valid = line.length < 2 || line.keep(2).skip(1) == t" "
       val known = sigil == t"" || sigil == t" " || sigil == t"?" || phase(sigil) > 0
-      if !valid || !known || line == t" " then abort(Error(reading.number, Reason.Sigil))
+      if !valid || !known || line == t" " then abort(Error(number, Reason.Sigil))
       val text = line.skip(2)
       val next = phase(sigil)
-      val position = reading.position
 
       // A passage goes on while its lines come in the order `!`, `-`, `+`.
-      val open: Optional[Passage] = reading.parts.head.let:
-        case passage: Passage if reading.phase > 0 && next >= reading.phase => passage
-        case _                                                              => Unset
+      val open: Optional[Passage] = if last > 0 && next >= last then current else Unset
 
-      val rest =
-        if open.present then reading.parts.excerpt(1, reading.parts.size) else reading.parts
+      if open.absent || next == 0 then
+        current.let { passage => done += close(passage) }
+        current = Unset
 
-      val passage = open.or(Passage(position, position, Nil, Nil, Nil, reading.number))
+      val passage = open.or(Passage(position, position, Nil, Nil, Nil, number))
 
-      val part: Shared | Passage = next match
-        case 1 => passage.copy(former = passage.former + List(text))
-        case 2 => passage.copy(end = position + 1, replaced = passage.replaced + List(text))
-        case 3 => passage.copy(lines = passage.lines + List(text))
-        case _ => Shared(text)
+      next match
+        case 1 => current = passage.copy(former = text :: passage.former)
+        case 2 => current = passage.copy(end = position + 1, replaced = text :: passage.replaced)
+        case 3 => current = passage.copy(lines = text :: passage.lines)
+        case _ => done += Shared(text)
 
-      val moved = if next == 0 || next == 2 then 1 else 0
-      val parts = if next == 0 then part :: reading.parts else part :: rest
-      Reading(parts, position + moved, next, reading.number + 1)
+      if next == 0 || next == 2 then position += 1
+      last = next
+      number += 1
 
-    . parts.reverse
+    current.let { passage => done += close(passage) }
+    List.from(done.toList)
 
   // What a check-in of an edited view asks for: the stale hunks whose `!` lines were deleted,
   // the content, and the runs of the reference which passages replace.
@@ -190,15 +218,23 @@ object Indirect:
     val stale = dossier.rendition(point).let(_.placements.filter(!_.fresh)).or(Nil)
 
     // The passage in which a stale hunk is as it was shown, `!` lines and all.
-    def kept(placement: Placement): Optional[Passage] =
-      passages.filter: passage =>
-        passage.start == placement.start && passage.end == placement.end &&
-          passage.former == placement.hunk.former
-
-      . head
+    val shown = scala.collection.mutable.HashMap[(Int, Int, List[Text]), Passage]()
 
     passages.each: passage =>
-      if !passage.former.nil && !stale.exists(kept(_) == passage)
+      shown.getOrElseUpdate((passage.start, passage.end, passage.former), passage)
+
+    def kept(placement: Placement): Optional[Passage] =
+      shown.get((placement.start, placement.end, placement.hunk.former)).getOrElse(Unset)
+
+    // The stale hunks which each passage shows, as it was.
+    val showing = scala.collection.mutable.HashMap[Passage, scala.collection.mutable.ListBuffer[Placement]]()
+
+    stale.each: placement =>
+      kept(placement).let: passage =>
+        showing.getOrElseUpdate(passage, scala.collection.mutable.ListBuffer()) += placement
+
+    passages.each: passage =>
+      if !passage.former.nil && !showing.contains(passage)
       then abort(Error(passage.line, Reason.Former))
 
     // A stale passage which was left alone gives what it showed before, which need not be its
@@ -208,10 +244,8 @@ object Indirect:
         List(line)
 
       case passage: Passage =>
-        stale.filter: placement =>
-          kept(placement) == passage && placement.hunk.lines == passage.lines
-
-        . head.lay(passage.lines)(_.lines)
+        showing.get(passage).flatMap(_.find(_.hunk.lines == passage.lines)).map(_.lines)
+        . getOrElse(passage.lines)
 
     Request
       ( stale.filter(kept(_).absent), lines,

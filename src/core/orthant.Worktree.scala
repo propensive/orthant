@@ -169,13 +169,15 @@ object Worktree:
   def changes(store: Workspace): List[Change] raises Store.Error raises Workspace.Error =
     val present = Disk.files(store.tree)
     val known = Disk.files(pristine(store))
+    val here = present.stdlib.toSet
+    val there = known.stdlib.toSet
 
-    val modified = known.filter(present.has(_)).filter: document =>
+    val modified = known.filter(here.contains(_)).filter: document =>
       lines(t"${store.tree}/$document") != lines(t"${pristine(store)}/$document")
 
-    present.filter(!known.has(_)).map(Change(_, Kind.Added)) +
+    present.filter(!there.contains(_)).map(Change(_, Kind.Added)) +
       modified.map(Change(_, Kind.Modified)) +
-      known.filter(!present.has(_)).map(Change(_, Kind.Missing))
+      known.filter(!here.contains(_)).map(Change(_, Kind.Missing))
 
   private def put(file: Text, content: Text, store: Workspace): Unit raises Store.Error =
     if Disk.read(file) != content then Disk.write(file, content, store.staging)
@@ -193,8 +195,10 @@ object Worktree:
     val contents: List[(Text, Text)] = store.documents.bind: document =>
       render(store, document, point, mode).lay(Nil): lines => List((document, Store.text(lines)))
 
+    val written = contents.map(_(0)).stdlib.toSet
+
     Disk.files(pristine(store)).each: document =>
-      if !contents.exists(_(0) == document) then
+      if !written.contains(document) then
         Disk.remove(t"${store.tree}/$document", store.tree)
         Disk.remove(t"${pristine(store)}/$document", pristine(store))
 
@@ -352,12 +356,14 @@ object Worktree:
 
       case Mode.Beside =>
         dossier.rendition(point).lay(placement.from + 1): rendition =>
-          val earlier =
-            rendition.placements.filter: other => other != placement && other.end <= placement.start
+          // The lines of the reference before the hunk, and those which each hunk before it
+          // adds to them: its `!` lines, and its own.
+          val added = rendition.placements.map: other =>
+            if other == placement || other.end > placement.start then 0
+            else if other.fresh then other.lines.size
+            else other.hunk.former.size + other.hunk.lines.size
 
-          val reference = rendition.reference.excerpt(0, placement.start)
-
-          Indirect.render(reference, earlier, dossier.translation(point)).size + 1
+          placement.start + added.fold(0)(_ + _) + 1
 
       case Mode.Against(name, value) =>
         val parts =
@@ -519,14 +525,15 @@ object Worktree:
   // How many other points have, in a document, some of the work which is a point's own there.
   def reach(store: Workspace, document: Text, point: Point): Int raises Axis.Error =
     val mine = Survey.own(store, document, point)
-    val stale = mine.stale.map(key)
+    val stale = mine.stale.map(key).stdlib.toSet
+    val pending = mine.pending.stdlib.toSet
 
     store.space.points.count: other =>
       other != point && Survey.above(store, other).has(point) && locally:
         val theirs = Survey.work(store, document, other)
 
-        theirs.pending.exists(mine.pending.has(_)) || theirs.stale.exists: placement =>
-          stale.has(key(placement))
+        theirs.pending.exists(pending.contains(_)) || theirs.stale.exists: placement =>
+          stale.contains(key(placement))
 
   // How best to look at a point's work: against the change from the value before it on an
   // axis, if at that value nothing wants doing; or else beside its storage parent.
