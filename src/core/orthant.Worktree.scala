@@ -24,6 +24,7 @@ import soundness.codepages.utf8Codepage
 import soundness.dysasymptotics.linearSize
 import soundness.errorDiagnostics.emptyDiagnostics
 import soundness.filesystemBackends.javaBaseFilesystem
+import soundness.systems.javaBaseSystem
 
 // The working tree: the documents as they are at one point, in a directory where they are
 // edited. Beside the store are kept which point that is, and a pristine copy of each document

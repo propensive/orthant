@@ -26,13 +26,14 @@ import soundness.collationComparable
 import soundness.collations.codepointCollation
 import soundness.errorDiagnostics.emptyDiagnostics
 import soundness.filesystemBackends.javaBaseFilesystem
-import soundness.filesystemOptions.createNonexistentParents
+import soundness.filesystemOptions.createParents
 import soundness.filesystemOptions.deleteRecursively
 import soundness.filesystemOptions.dereferenceSymlinks
 import soundness.filesystemOptions.moveAtomically
 import soundness.filesystemOptions.overwritePreexisting
-import soundness.pathInterfaces.pathOnLinux
+import soundness.pathInterfaces.pathOnLocal
 import soundness.sortingAlgorithms.timsort
+import soundness.systems.javaBaseSystem
 import soundness.textSanitizers.skipSanitizer
 
 // The few things Orthant does to a disk, each naming a file by its absolute path as text, and
@@ -53,8 +54,8 @@ object Disk:
     . protect(block)
 
   // The directory which a path names, as the reader takes a store's home.
-  def path(directory: Text): Path on Linux raises Store.Error =
-    access(directory)(directory.as[Path on Linux])
+  def path(directory: Text): Path on Local raises Store.Error =
+    access(directory)(directory.as[Path on Local])
 
   // The directory a file is in.
   def parent(file: Text): Text =
@@ -62,31 +63,31 @@ object Disk:
     parts.excerpt(0, parts.count { part => true } - 1).join(t"/")
 
   def exists(file: Text): Boolean raises Store.Error =
-    access(file)(file.as[Path on Linux].existent())
+    access(file)(file.as[Path on Local].existent())
 
   def read(file: Text): Optional[Text] raises Store.Error = access(file):
-    val path = file.as[Path on Linux]
+    val path = file.as[Path on Local]
     if path.existent() then path.read[Text] else Unset
 
   def directory(file: Text): Unit raises Store.Error = access(file):
-    val path = file.as[Path on Linux]
+    val path = file.as[Path on Local]
     if !path.existent() then path.create[Directory](CreateFlag.Parents)
 
   // The file is written beside the store and moved into place, so that no reader sees part of it.
   def write(file: Text, content: Text, staging: Text): Unit raises Store.Error = access(file):
     directory(parent(staging))
-    val temporary = staging.as[Path on Linux]
+    val temporary = staging.as[Path on Local]
     temporary.write(content)
-    temporary.moveTo(file.as[Path on Linux])
+    temporary.moveTo(file.as[Path on Local])
 
   // Deletes a file, and each directory this leaves empty, as far as `within`.
   def remove(file: Text, within: Text): Unit raises Store.Error = access(file):
-    val path = file.as[Path on Linux]
+    val path = file.as[Path on Local]
     if path.existent() then path.delete()
 
     def prune(directory: Text): Unit =
       if directory != within && directory.starts(within) then
-        val path = directory.as[Path on Linux]
+        val path = directory.as[Path on Local]
 
         if path.existent() && path.children.to[List].nil then
           path.delete()
@@ -98,7 +99,7 @@ object Disk:
 
   // The names of the directories in a directory, in order; none if it does not exist.
   def directories(directory: Text): List[Text] raises Store.Error = access(directory):
-    val path = directory.as[Path on Linux]
+    val path = directory.as[Path on Local]
 
     if !path.existent() then Nil else
       val names = path.children.to[List].bind: child =>
@@ -111,14 +112,14 @@ object Disk:
   // The files beneath a directory, as paths relative to it, in order; none if it does not
   // exist. Hidden files and directories are passed over.
   def files(directory: Text): List[Text] raises Store.Error = access(directory):
-    def recur(path: Path on Linux, prefix: Text): List[Text] =
+    def recur(path: Path on Local, prefix: Text): List[Text] =
       path.children.to[List].bind: child =>
         if hidden(child.name) then Nil else child.entry() match
           case Directory => recur(child, t"$prefix${child.name}/")
           case File      => List(t"$prefix${child.name}")
           case _         => Nil
 
-    val path = directory.as[Path on Linux]
+    val path = directory.as[Path on Local]
     if !path.existent() then Nil else recur(path, t"").order: name => name
 
   // Runs the block while holding the lock file, which keeps other invocations out.
@@ -126,5 +127,5 @@ object Disk:
     directory(parent(file))
 
     access(file):
-      val path = file.as[Path on Linux]
+      val path = file.as[Path on Local]
       path.open[File](Read & Write & Exclusive, OpenFlag.Create): handle ?=> block

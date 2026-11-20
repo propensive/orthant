@@ -157,21 +157,21 @@ object SelfUpgrade:
 
   // The cached manifest, `$XDG_CACHE_HOME/orthant/upgrade.tsv`, so that a daemon restarted
   // within a day of the last check does not fetch again.
-  private def cacheDirectory(using Environment): Optional[Path on Linux] =
-    safely(Xdg.cacheHome[Path on Linux] / Name[Linux](name))
+  private def cacheDirectory(using Environment): Optional[Path on Local] =
+    safely(Xdg.cacheHome[Path on Local] / Name[Local](name))
 
-  private def cache(using Environment): Optional[Path on Linux] =
-    cacheDirectory.let: directory => safely(directory / Name[Linux](t"upgrade.tsv"))
+  private def cache(using Environment): Optional[Path on Local] =
+    cacheDirectory.let: directory => safely(directory / Name[Local](t"upgrade.tsv"))
 
   // The newest release, from the cache if it is fresh enough and `force` is not set, and
   // otherwise fetched (and cached). Whatever is learned is remembered for `available`; `Unset`
   // if nothing could be read.
   def refresh(force: Boolean)(using Environment): Optional[UpgradeManifest] =
-    val file: Optional[Path on Linux] = cache
+    val file: Optional[Path on Local] = cache
 
     val cached: Optional[UpgradeManifest] =
       if force then Unset else file.let: file =>
-        safely(summon[FilesystemBackend on Linux].stat(file, true)).let: stat =>
+        safely(summon[FilesystemBackend on Local].stat(file, true)).let: stat =>
           val age: Long = java.lang.System.currentTimeMillis() - stat.modified
           val fresh = age < checkInterval
           if fresh then safely(file.read[Text]).let(UpgradeManifest.parse(_)) else Unset
@@ -182,7 +182,7 @@ object SelfUpgrade:
           cacheDirectory.let: directory =>
             safely:
               if !directory.existent() then directory.create[Directory](CreateFlag.Parents)
-              (directory / Name[Linux](t"upgrade.tsv")).write(text)
+              (directory / Name[Local](t"upgrade.tsv")).write(text)
 
     release.let: release => latest.set(List(release))
     release
