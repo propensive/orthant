@@ -33,6 +33,15 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
   def hold(point: Point, folio: Optional[Folio]): Dossier =
     Dossier(space, folio.lay(folios.omit(point))(folios.define(point, _)))
 
+  // As `hold`, but what is already derived at the points which do not inherit from `point` is
+  // kept, as it is unchanged.
+  private def retain(point: Point, folio: Optional[Folio]): Dossier raises Axis.Error =
+    val result = hold(point, folio)
+    memo.foreach: (other, rendition) =>
+      if !space.below(other, point) then result.memo(other) = rendition
+
+    result
+
   // The content of the document at a point, or `Unset` if it does not exist there.
   def content(point: Point): Optional[List[Text]] raises Axis.Error = rendition(point).let(_.lines)
 
@@ -198,41 +207,148 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
     val placements = List.from(placed.toList)
     val stale = placements.filter(!_.fresh).map(Issue.Stale(_))
 
-    Rendition(lines, reference.lines, placements, issues + stale + List.from(conflicts.reverse))(reference)
+    Rendition(lines, reference.lines, placements, issues + stale + List.from(conflicts.reverse))
+      ( reference, candidates )
 
   def store(point: Point, lines: Optional[List[Text]]): Dossier raises Axis.Error =
-    space.storageAxis(point).lay(hold(point, lines.let(Folio.Base(_)))): axis =>
-      val bare = hold(point, Unset)
+    space.storageAxis(point).lay(retain(point, lines.let(Folio.Base(_)))): axis =>
+      val bare = retain(point, Unset)
 
       def gone: Dossier =
-        if bare.content(point).absent then bare else hold(point, Folio.Absent(axis.name))
+        if bare.content(point).absent then bare else retain(point, Folio.Absent(axis.name))
 
       lines.lay(gone): lines =>
         val delta: Dossier = folios.at(point) match
           case Folio.Delta(_, _) => this
-          case _                 => hold(point, Folio.Delta(axis.name, Nil))
+          case _                 => retain(point, Folio.Delta(axis.name, Nil))
 
-        delta.rendition(point).lay(hold(point, Folio.Base(lines))): rendition =>
+        delta.rendition(point).lay(retain(point, Folio.Base(lines))): rendition =>
           val keep = axis.preference == Preference.Own
           val hunks = Inscription.hunks(rendition, lines, point, keep)
-          def held(hunks: List[Hunk]): Dossier = hold(point, Folio.Delta(axis.name, hunks))
+          def held(hunks: List[Hunk]): Dossier = retain(point, Folio.Delta(axis.name, hunks))
+
+          val whole = held(hunks)
+          val issues = whole.issues(point).size
+          val pending = whole.pending(point).size
 
           // A hunk without which the content is the same, and no more of it wants attention,
           // says nothing an inherited one does not.
           def same(dossier: Dossier): Boolean =
-            dossier.content(point) == lines &&
-              dossier.issues(point).size <= held(hunks).issues(point).size &&
-              dossier.pending(point).size <= held(hunks).pending(point).size
+            dossier.content(point) == lines && dossier.issues(point).size <= issues &&
+              dossier.pending(point).size <= pending
+
+          // Whether a hunk may go is decided, where it can be, from the hunks about it alone.
+          // `Alone` is a fresh hunk which gives the lines it replaces and which overlaps no
+          // other: without it, only its lines' being accounted for is lost. `Twin` is a hunk
+          // which overlaps only an inherited hunk at the same lines, which overlaps only it:
+          // without it, the inherited hunk is applied in its place. `Needed` is one which
+          // overlaps nothing and changes its lines, and any other is `Tangled`, and is tried.
+          enum Kind:
+            case Needed, Tangled
+            case Alone(pending: Int)
+            case Twin(same: Boolean, issues: Int)
+
+          val kinds: scala.collection.immutable.Map[Hunk, Kind] =
+            val rendition = whole.rendition(point)
+            val all: scala.Array[Placement] = rendition.let(_.candidates).or(Nil).stdlib.toArray
+            val spans = all.filter { placement => placement.start < placement.end }
+            val starts: scala.Array[Int] = spans.map(_.start).sorted
+            val ends: scala.Array[Int] = spans.map(_.end).sorted
+            val gaps: scala.Array[Int] = all.filter { placement => placement.start == placement.end }.map(_.start).sorted
+
+            // How many of the sorted numbers are less than `bound`.
+            def below(sorted: scala.Array[Int], bound: Int): Int =
+              var low = 0
+              var high = sorted.length
+
+              while low < high do
+                val middle = (low + high)/2
+                if sorted(middle) < bound then low = middle + 1 else high = middle
+
+              low
+
+            // How many other located hunks a placement overlaps.
+            def overlaps(placement: Placement): Int =
+              if placement.start == placement.end then
+                below(starts, placement.start) - below(ends, placement.start + 1) +
+                  below(gaps, placement.start + 1) - below(gaps, placement.start) - 1
+              else
+                below(starts, placement.end) - below(ends, placement.start + 1) - 1 +
+                  below(gaps, placement.end) - below(gaps, placement.start + 1)
+
+            val inherited: scala.collection.immutable.Map[(Int, Int), scala.Array[Placement]] =
+              all.filter(_.origin != point).groupBy { placement => (placement.start, placement.end) }
+
+            val translated = translation(point)
+            val reference = rendition.let(_.base)
+
+            def unaccounted(placement: Placement): Int = reference.lay(0): reference =>
+              var count = 0
+              var line = placement.start
+
+              while line < placement.end do
+                if reference(line) != t"" then count += 1
+                line += 1
+
+              count
+
+            val own = all.filter(_.origin == point)
+            val twice: scala.collection.immutable.Set[Hunk] =
+              own.groupBy(_.hunk).filter(_(1).length > 1).keySet
+
+            scala.collection.immutable.Map.from(own.iterator.map: placement =>
+              val count = overlaps(placement)
+              val twins = inherited.getOrElse((placement.start, placement.end), scala.Array[Placement]())
+
+              val kind: Kind =
+                if twice.contains(placement.hunk) then Kind.Tangled
+                else if count == 0 then
+                  if placement.hunk.stale then Kind.Tangled
+                  else if placement.hunk.replaced != placement.lines then Kind.Needed
+                  else Kind.Alone(if translated then unaccounted(placement) else 0)
+                else if count == 1 && twins.length == 1 && overlaps(twins(0)) == 1 then
+                  Kind.Twin
+                    ( twins(0).lines == placement.lines,
+                      (if twins(0).fresh then 0 else 1) - (if placement.fresh then 0 else 1) )
+                else Kind.Tangled
+
+              placement.hunk -> kind )
+
+          // The kinds say what a hunk's going would change in content which is the lines: if
+          // the hunks do not give the lines, two of them being at one place, each is tried.
+          val sound: Boolean = whole.content(point) == lines
 
           // Dropping one may leave another with nothing to do, so this repeats until none goes.
-          def prune(hunks: List[Hunk]): List[Hunk] =
-            val pruned = hunks.fold(hunks): (hunks, hunk) =>
-              val fewer = hunks.filter(_ != hunk)
-              if same(held(fewer)) then fewer else hunks
+          def prune(hunks: List[Hunk], issues0: Int, pending0: Int): List[Hunk] =
+            val gone = scala.collection.mutable.HashSet[Hunk]()
+            var current = (issues0, pending0)
+            def left: List[Hunk] = if gone.isEmpty then hunks else hunks.filter(!gone.contains(_))
 
-            if pruned == hunks then hunks else prune(pruned)
+            hunks.each: hunk =>
+              if !gone.contains(hunk) then (if sound then kinds.getOrElse(hunk, Kind.Tangled) else Kind.Tangled) match
+                case Kind.Needed =>
+                  ()
 
-          val needed = prune(hunks)
+                case Kind.Alone(more) =>
+                  if current(1) + more <= pending then
+                    gone += hunk
+                    current = (current(0), current(1) + more)
+
+                case Kind.Twin(same, more) =>
+                  if same && current(0) + more <= issues then
+                    gone += hunk
+                    current = (current(0) + more, current(1))
+
+                case Kind.Tangled =>
+                  val fewer = held(left.filter(_ != hunk))
+
+                  if same(fewer) then
+                    gone += hunk
+                    current = (fewer.issues(point).size, fewer.pending(point).size)
+
+            if gone.isEmpty then hunks else prune(left, current(0), current(1))
+
+          val needed = prune(hunks, issues, pending)
 
           if needed.nil && same(bare) then bare else held(needed)
 
@@ -253,7 +369,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
           val hunk =
             Hunk(rendition.reference.excerpt(placement.start, placement.end), placement.lines)
 
-          (placement.start, Inscription.anchor(hunk, placement.start, rendition.reference))
+          (placement.start, Inscription.anchor(hunk, placement.start, rendition.base))
 
         val kept: List[(Int, Hunk)] =
           rendition.placements.filter: placement =>
@@ -262,7 +378,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
           . map: placement => (placement.start, placement.hunk)
 
         val hunks = (kept + checked).order { (start, hunk) => hunk.rank(start) }.map(_(1))
-        if stale.nil then this else hold(point, Folio.Delta(axis.name, hunks))
+        if stale.nil then this else retain(point, Folio.Delta(axis.name, hunks))
 
   // Whether the point's content is a translation of its storage parent's.
   def translation(point: Point): Boolean raises Axis.Error =
@@ -311,10 +427,10 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
 
           val added: List[(Int, Hunk)] = free.map: (start, end) =>
             val same = rendition.reference.excerpt(start, end)
-            (start, Inscription.anchor(Hunk(same, same), start, rendition.reference))
+            (start, Inscription.anchor(Hunk(same, same), start, rendition.base))
 
           val hunks = (kept + added).order { (start, hunk) => hunk.rank(start) }.map(_(1))
-          hold(point, Folio.Delta(axis.name, hunks))
+          retain(point, Folio.Delta(axis.name, hunks))
 
   // The dossier in which a hunk stored at `point` which only takes out the lines `start` to
   // `end` of its storage parent's content, and one stored there which only puts lines in at
@@ -350,10 +466,10 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
                   placement.origin == point && placement != taking && placement != putting
 
                 . map { placement => (placement.start, placement.hunk) } +
-                  List((taking.start, Inscription.anchor(whole, taking.start, rendition.reference)))
+                  List((taking.start, Inscription.anchor(whole, taking.start, rendition.base)))
 
               val ordered = hunks.order { (start, hunk) => hunk.rank(start) }.map(_(1))
-              val united = dossier.hold(point, Folio.Delta(axis.name, ordered))
+              val united = dossier.retain(point, Folio.Delta(axis.name, ordered))
 
               val same = !space.points.exists: other =>
                 united.content(other) != dossier.content(other) ||
@@ -400,29 +516,26 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
     space.storageParent(point).lay(this): parent =>
       folios.at(point) match
         case Folio.Delta(axis, hunks) =>
-          former.content(parent).lay(this): old =>
-            content(parent).lay(this): next =>
-              if old == next then this else
-                val located: List[(Int, Hunk)] = hunks.bind: hunk =>
-                  Rebase.occurrences(hunk, old) match
-                    case start :: Nil => List((start, hunk))
-                    case _            => Nil
-
-                val unlocated = hunks.filter: hunk => !located.exists(_(1) == hunk)
+          former.rendition(parent).let(_.content).lay(this): old =>
+            rendition(parent).let(_.content).lay(this): next =>
+              if old.lines == next.lines then this else
+                val places: List[(Int, Hunk)] = hunks.map: hunk => (Rebase.locate(hunk, old), hunk)
+                val located: List[(Int, Hunk)] = places.filter(_(0) >= 0)
+                val unlocated: List[Hunk] = places.filter(_(0) < 0).map(_(1))
 
                 val moved: List[(Int, Hunk)] = Rebase(located, old, next).sweep:
                   case Rebase.Outcome.Fresh(start, hunk) =>
                     // An insertion must keep a line of context, or the document's start.
                     val anchored = !hunk.insertion || !hunk.before.nil || hunk.start
 
-                    if anchored && Rebase.occurrences(hunk, next) == List(start) then (start, hunk)
+                    if anchored && Rebase.locate(hunk, next) == start then (start, hunk)
                     else (start, Inscription.anchor(hunk, start, next))
 
                   case Rebase.Outcome.Stale(start, _, hunk) =>
                     (start, Inscription.anchor(hunk, start, next))
 
                 val ordered = moved.order { (start, hunk) => hunk.rank(start) }.map(_(1))
-                hold(point, Folio.Delta(axis, ordered + unlocated))
+                retain(point, Folio.Delta(axis, ordered + unlocated))
 
         case _ =>
           this

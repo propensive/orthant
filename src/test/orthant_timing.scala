@@ -53,3 +53,36 @@ def timing(root: String): Unit =
   val check = now
   say("faults: "+store.faults.size.toString+" in "+since(check))
   say("total "+since(start))
+
+// Times a check-in of each of the longest documents of a store on disk, unchanged and with one
+// line changed, at every point: `java -cp <test jar> orthant.timingCheckin <store's home> <count>`.
+@main
+def timingCheckin(root: String, count: Int): Unit =
+  import strategies.throwUnsafely
+  def now: Long = java.lang.System.nanoTime
+  def since(start: Long): String = ((now - start)/1000000L).toString+"ms"
+  def say(text: String): Unit = java.lang.System.out.nn.println(text)
+  val store = Store.inspect(Disk.path(root.tt))
+  val last = store.points.last.or(panic(m"a store has a point"))
+
+  val longest: List[Text] =
+    store.documents.map { document => (store.dossier(document).content(last).let(_.size).or(0), document) }
+    . stdlib.sortBy(-_(0)).take(count).map(_(1)).pipe(List.from(_))
+
+  longest.each: document =>
+    store.points.each: point =>
+      val dossier = store.dossier(document)
+
+      dossier.content(point).let: lines =>
+        val begin = now
+        val same = dossier.checkin(point, lines)
+        val first = since(begin)
+        val unchanged = same.folios == dossier.folios
+        val edited = lines.stdlib.updated(lines.size/2, t"a changed line").pipe(List.from(_))
+        val again = now
+        val changed = dossier.checkin(point, edited)
+        val ok = changed.content(point) == edited
+
+        say:
+          document.s+" at "+store.name(point).s+" ("+lines.size.toString+" lines): unchanged "+first+
+            " (same records: "+unchanged.toString+"), one line changed "+since(again)+" (ok: "+ok.toString+")"
