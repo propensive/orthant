@@ -49,7 +49,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
 
   private def derive(point: Point): Optional[Rendition] raises Axis.Error =
     def base: Optional[Rendition] =
-      folios.at(point).let(_.only { case Folio.Base(lines) => Rendition(lines) })
+      folios.at(point).let(_.only { case Folio.Base(lines) => Rendition(lines)() })
 
     space.storageParent(point).lay(base): parent =>
       val axis = space.storageAxis(point).or(panic(m"a point with a storage parent has an axis"))
@@ -59,7 +59,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
       // unless a delta more specific than it cancels it.
       def decide(todo: List[Point], deltas: List[Point]): Optional[Rendition] = todo match
         case origin :: tail => folios.at(origin) match
-          case Folio.Base(lines)  if deltas.nil => Rendition(lines)
+          case Folio.Base(lines)  if deltas.nil => Rendition(lines)()
           case Folio.Absent(_)    if deltas.nil => Unset
           case Folio.Delta(_, _)                => decide(tail, origin :: deltas)
           case Folio.Base(_) | Folio.Absent(_)  => apply(deltas.reverse)
@@ -68,20 +68,21 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
         case _ =>
           apply(deltas.reverse)
 
-      def apply(deltas: List[Point]): Optional[Rendition] = content(parent).let: reference =>
+      def apply(deltas: List[Point]): Optional[Rendition] = rendition(parent).let(_.content).let: reference =>
         val placed: List[Placement | Issue] = deltas.bind: origin =>
           val hunks: List[Hunk] =
             folios.at(origin).let(_.only { case Folio.Delta(_, hunks) => hunks }).or(Nil)
 
-          val source: Optional[List[Text]] =
-            if origin == point then reference else space.storageParent(origin).let(content(_))
+          val source: Optional[Content] =
+            if origin == point then reference
+            else space.storageParent(origin).let(rendition(_)).let(_.content)
 
           source.lay(List[Placement | Issue]()): source =>
             val located: List[(Int, Hunk) | Issue] = hunks.map: hunk =>
-              Rebase.occurrences(hunk, source) match
-                case start :: Nil => (start, hunk)
-                case Nil          => Issue.Orphan(origin, hunk)
-                case _            => Issue.Ambiguous(origin, hunk)
+              Rebase.locate(hunk, source) match
+                case Content.Absent  => Issue.Orphan(origin, hunk)
+                case Content.Several => Issue.Ambiguous(origin, hunk)
+                case start           => (start, hunk)
 
             val outcomes: List[Rebase.Outcome] =
               val found = located.sweep { case pair: (Int, Hunk) @unchecked => pair }
@@ -109,11 +110,9 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
     val own = fresh || axis.preference == Preference.Own
     Placement(start, end, hunk, origin, fresh, if own then hunk.lines else hunk.replaced)
 
-  private def resolve(reference: List[Text], candidates: List[Placement], issues: List[Issue])
+  private def resolve(reference: Content, candidates: List[Placement], issues: List[Issue])
   :   Rendition raises Axis.Error =
 
-    // Fresh before stale, then the most specific origin; a candidate is accepted if it overlaps
-    // nothing accepted before it.
     val ranked: List[Placement] =
       val byStart = candidates.order(_.start)
 
@@ -122,45 +121,85 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
 
       byOrigin.order: candidate => if candidate.fresh then 0 else 1
 
-    val (accepted, conflicts) =
-      ranked.fold((List[Placement](), List[Issue]())): (state, candidate) =>
-        val (accepted, conflicts) = state
+    // The accepted placements overlap one another nowhere, so those which replace lines are
+    // sought by where they begin, and those which only insert by where they insert. Each is
+    // numbered as it is accepted: of several which a candidate overlaps, the latest is its rival.
+    val spans = java.util.TreeMap[Integer, (Int, Placement)]()
+    val points = java.util.TreeMap[Integer, (Int, Placement)]()
+    var accepted: scala.List[Placement] = scala.Nil
+    var conflicts: scala.List[Issue] = scala.Nil
+    var number = 0
 
-        val met = accepted.filter(_.overlaps(candidate)).head
+    def rival(candidate: Placement): Optional[Placement] =
+      var best: Optional[(Int, Placement)] = Unset
 
-        met.lay((candidate :: accepted, conflicts)): rival =>
-          val comparable =
-            space.below(candidate.origin, rival.origin) ||
-              space.below(rival.origin, candidate.origin)
+      def offer(found: (Int, Placement) | Null): Unit =
+        if found != null then
+          val pair = found.asInstanceOf[(Int, Placement)]
+          if pair(1).overlaps(candidate) && best.lay(true)(_(0) < pair(0)) then best = pair
 
-          if comparable || rival.fresh != candidate.fresh || rival.lines == candidate.lines
-          then (accepted, conflicts)
-          else (accepted, Issue.Conflict(rival, candidate) :: conflicts)
+      def valueOf(entry: java.util.Map.Entry[Integer, (Int, Placement)] | Null)
+      :   (Int, Placement) | Null =
 
-    // An insertion comes before a replacement which begins where it is.
+        if entry == null then null else entry.getValue
+
+      if candidate.start == candidate.end then
+        offer(points.get(Integer.valueOf(candidate.start)))
+        offer(valueOf(spans.lowerEntry(Integer.valueOf(candidate.start))))
+      else
+        offer(valueOf(spans.lowerEntry(Integer.valueOf(candidate.start))))
+
+        spans.subMap(Integer.valueOf(candidate.start), true, Integer.valueOf(candidate.end), false)
+        . nn.values.nn.forEach(offer(_))
+
+        points.subMap(Integer.valueOf(candidate.start), false, Integer.valueOf(candidate.end), false)
+        . nn.values.nn.forEach(offer(_))
+
+      best.let(_(1))
+
+    ranked.each: candidate =>
+      rival(candidate).lay
+        ( {
+            number += 1
+            accepted = candidate :: accepted
+
+            if candidate.start == candidate.end
+            then points.put(Integer.valueOf(candidate.start), (number, candidate))
+            else spans.put(Integer.valueOf(candidate.start), (number, candidate))
+            () } ): rival =>
+        val comparable =
+          space.below(candidate.origin, rival.origin) ||
+            space.below(rival.origin, candidate.origin)
+
+        if !(comparable || rival.fresh != candidate.fresh || rival.lines == candidate.lines)
+        then conflicts = Issue.Conflict(rival, candidate) :: conflicts
+
     val ordered =
-      accepted.order: placement =>
+      List.from(accepted).order: placement =>
         placement.start*2 + (if placement.start == placement.end then 0 else 1)
 
-    def render(todo: List[Placement], position: Int, count: Int): (List[Text], List[Placement]) =
-      todo match
-        case placement :: tail =>
-          val shared = reference.excerpt(position, placement.start)
-          val from = count + shared.size
-          val to = from + placement.lines.size
-          val (lines, placements) = render(tail, placement.end, to)
-          (shared + placement.lines + lines, placement.copy(from = from, to = to) :: placements)
+    val buffer = scala.collection.mutable.ListBuffer[Text]()
+    val placed = scala.collection.mutable.ListBuffer[Placement]()
+    var position = 0
+    var count = 0
 
-        case _ =>
-          (reference.excerpt(position, reference.size), Nil)
+    ordered.each: placement =>
+      val shared = reference.slice(position, placement.start).stdlib
+      buffer ++= shared
+      val from = count + shared.length
+      val size = placement.lines.stdlib.length
+      buffer ++= placement.lines.stdlib
+      placed += placement.copy(from = from, to = from + size)
+      count = from + size
+      position = placement.end
 
-    val (lines, placements) = render(ordered, 0, 0)
+    buffer ++= reference.slice(position, reference.size).stdlib
+    val lines = List.from(buffer.toList)
+    val placements = List.from(placed.toList)
     val stale = placements.filter(!_.fresh).map(Issue.Stale(_))
 
-    Rendition(lines, reference, placements, issues + stale + conflicts.reverse)
+    Rendition(lines, reference.lines, placements, issues + stale + List.from(conflicts.reverse))(reference)
 
-  // The dossier in which the content at `point` is `lines`, or in which the document is absent
-  // there. Only what is held at `point` differs; every point below it follows.
   def store(point: Point, lines: Optional[List[Text]]): Dossier raises Axis.Error =
     space.storageAxis(point).lay(hold(point, lines.let(Folio.Base(_)))): axis =>
       val bare = hold(point, Unset)
@@ -233,18 +272,25 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
   // to replace: those which are not blank, and which no hunk takes the place of.
   def pending(point: Point): List[Int] raises Axis.Error =
     if !translation(point) then Nil else rendition(point).lay(Nil): rendition =>
-      def covered(line: Int): Boolean = rendition.placements.exists: placement =>
-        placement.start <= line && line < placement.end
+      val reference = rendition.base
+      val covered = new scala.Array[Boolean](reference.size)
 
-      rendition.reference.fold((0, List[Int]())): (state, line) =>
-        val (index, found) = state
-        (index + 1, if line == t"" || covered(index) then found else index :: found)
+      rendition.placements.each: placement =>
+        var line = placement.start
 
-      . apply(1).reverse
+        while line < placement.end && line < covered.length do
+          covered(line) = true
+          line += 1
 
-  // The dossier in which each run of the storage parent's lines given, from `start` to `end`,
-  // is held at `point` to be translated by the same lines, where no hunk replaces any of them.
-  // Elsewhere than on a translation edge, such a hunk would say nothing.
+      val found = scala.collection.mutable.ListBuffer[Int]()
+      var index = 0
+
+      while index < covered.length do
+        if reference(index) != t"" && !covered(index) then found += index
+        index += 1
+
+      List.from(found.toList)
+
   def affirm(point: Point, spans: List[(Int, Int)]): Dossier raises Axis.Error =
     space.storageAxis(point).lay(this): axis =>
       rendition(point).lay(this): rendition =>
