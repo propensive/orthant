@@ -232,7 +232,8 @@ axis's pattern takes. Each tag's commit becomes a value: its name is the first t
 the commit's hash, and the tag is its label, by which it is shown and may be named. Its parent
 is the nearest value whose commit is an ancestor of it, or the axis's root. If two such values
 are nearest, neither an ancestor of the other, the sync is refused (`↯/o.7.2`), and the tag is
-given its parent by hand.
+given its parent by hand. Where the root has a commit, a tag of a commit which is not descended
+from it is older than what the axis follows, and is not taken.
 
 A tracked branch has a value of its own name, beneath the nearest tagged ancestor of its tip:
 what is not yet released there. When a new tag is found between that parent and the tip, the

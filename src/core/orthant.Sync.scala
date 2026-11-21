@@ -87,13 +87,6 @@ object Sync:
 
     . protect:
         root.as[Path on Local].open[Git.Worktree](): worktree ?=>
-          val known = scala.collection.mutable.HashMap[(Text, Text), Boolean]()
-
-          def ancestor(upper: Text, lower: Text): Boolean =
-            known.getOrElseUpdate
-              ( (upper, lower),
-                worktree.isAncestor(Git.Hash.unsafe(upper), Git.Hash.unsafe(lower)) )
-
           val head = worktree.head().value match
             case Git.Head.Attached(branch, _) => branch.text
             case _                            => Unset
@@ -102,6 +95,75 @@ object Sync:
 
           val branches = worktree.branches().value.to[List].map: (branch, hash) =>
             (branch.text, hash.text)
+
+          // The history beneath every tag and branch is read once: each commit's parents. The
+          // branches' histories are read whole; what a tag adds is read a commit at a time.
+          val parents = scala.collection.mutable.HashMap[Text, scala.List[Text]]()
+
+          branches.each: (branch, tip) =>
+            if !parents.contains(tip) then
+              worktree.log(Git.Revision.unsafe(tip)).value.each: commit =>
+                parents(commit.commit.text) = commit.parents.stdlib.toList.map(_.text)
+
+          tags.each: (tag, hash) =>
+            val todo = scala.collection.mutable.Stack[Text](hash)
+
+            while !todo.isEmpty do
+              val next = todo.pop()
+
+              if !parents.contains(next) then
+                val above: scala.List[Text] = worktree.show(Git.Hash.unsafe(next)) match
+                  case Git.Object.Commit(commit) => commit.parents.stdlib.toList.map(_.text)
+                  case _                         => scala.Nil
+
+                parents(next) = above
+                above.foreach { parent => if !parents.contains(parent) then todo.push(parent) }
+
+          // Which of the tagged commits and branch tips each commit has beneath it, itself
+          // included: a set of bits, made for each commit from its parents', parents first.
+          val marked: scala.Array[Text] =
+            (tags.stdlib.map(_(1)) ++ branches.stdlib.map(_(1))).distinct.toArray
+
+          val bit = scala.collection.mutable.HashMap[Text, Int]()
+          marked.indices.foreach { index => bit(marked(index)) = index }
+          val words = (marked.length + 63)/64
+          val beneath = scala.collection.mutable.HashMap[Text, scala.Array[Long]]()
+
+          parents.keys.foreach: start =>
+            val todo = scala.collection.mutable.Stack[(Text, Boolean)]((start, false))
+
+            while !todo.isEmpty do
+              val (commit, expanded) = todo.pop()
+
+              if !beneath.contains(commit) then
+                val above = parents.getOrElse(commit, scala.Nil)
+
+                if expanded || above.forall { parent => beneath.contains(parent) || !parents.contains(parent) } then
+                  val bits = new scala.Array[Long](words)
+
+                  above.foreach: parent =>
+                    beneath.get(parent).foreach: theirs =>
+                      bits.indices.foreach { word => bits(word) |= theirs(word) }
+
+                  bit.get(commit).foreach { index => bits(index/64) |= 1L << (index%64) }
+                  beneath(commit) = bits
+                else
+                  todo.push((commit, true))
+
+                  above.foreach: parent =>
+                    if !beneath.contains(parent) && parents.contains(parent)
+                    then todo.push((parent, false))
+
+          val known = scala.collection.mutable.HashMap[(Text, Text), Boolean]()
+
+          def ancestor(upper: Text, lower: Text): Boolean =
+            if upper == lower then true else
+              (bit.get(upper), beneath.get(lower)) match
+                case (Some(index), Some(bits)) => (bits(index/64) & (1L << (index%64))) != 0
+                case _ =>
+                  known.getOrElseUpdate
+                    ( (upper, lower),
+                      worktree.isAncestor(Git.Hash.unsafe(upper), Git.Hash.unsafe(lower)) )
 
           block(Refs(tags, branches, head, ancestor))
 
@@ -187,7 +249,14 @@ object Sync:
 
     val entry = git(store, axis)
     val pattern = entry.pattern.or(t"*")
-    val tags = refs.tags.filter { (tag, hash) => takes(pattern, tag) }.order(_(0))
+    // A tag of a commit older than the root's, where the root has one, is not followed.
+    val base = entry.value.filter(_.parent.absent).head.let(_.commit)
+
+    val tags =
+      refs.tags.filter: (tag, hash) =>
+        takes(pattern, tag) && base.lay(true)(refs.ancestor(_, hash))
+
+      . order(_(0))
 
     // A tag of a commit which is already a value is one more label for it.
     val labelled = entry.value.fold((store, List[Text]())): (state, value) =>

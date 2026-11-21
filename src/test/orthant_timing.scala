@@ -150,3 +150,22 @@ def workAt(root: String, name: String): Unit =
     val work = Survey.work(store, document, point)
     if work.wanting then java.lang.System.out.nn.println:
       document.s+"\t"+work.pending.size.toString+"\t"+work.stale.size.toString+"\t"+work.faults.toString
+
+// Times reading a repository's references and asking, of every pair of tags, whether one is an
+// ancestor of the other: `java -cp <test jar> orthant.timingSync <repository>`.
+@main
+def timingSync(root: String): Unit =
+  import strategies.throwUnsafely
+  val start = java.lang.System.nanoTime
+
+  Sync.reading(root.tt): refs =>
+    val read = java.lang.System.nanoTime
+    val hashes = refs.tags.map(_(1))
+    var count = 0
+    hashes.each { upper => hashes.each { lower => if refs.ancestor(upper, lower) then count += 1 } }
+    val asked = java.lang.System.nanoTime
+
+    java.lang.System.out.nn.println
+      ( s"${refs.tags.size} tags, ${refs.branches.size} branches; read in "+
+        s"${(read - start)/1000000} ms; ${hashes.size*hashes.size} questions, $count yes, in "+
+        s"${(asked - read)/1000000} ms" )
