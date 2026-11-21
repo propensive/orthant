@@ -188,14 +188,21 @@ object Worktree:
   def checkout(store: Workspace, point: Point, force: Boolean, mode: Mode = Mode.Plain)
   :   Int raises Store.Error raises Workspace.Error raises Axis.Error =
 
-    val pending = changes(store)
-    if !force && !pending.nil then abort(Workspace.Error(Workspace.Reason.Edited(pending.size)))
     admit(store, point, mode)
 
     val contents: List[(Text, Text)] = store.documents.bind: document =>
       render(store, document, point, mode).lay(Nil): lines => List((document, Store.text(lines)))
 
     val written = contents.map(_(0)).stdlib.toSet
+    val content = contents.stdlib.toMap
+
+    // A file in the working tree alone is lost only if the checkout writes another over it; one
+    // which already holds what would be written, as a fresh clone's tracked files do, is not.
+    val pending = changes(store).filter: change =>
+      change.kind != Kind.Added || content.get(change.document).exists: text =>
+        Disk.read(t"${store.tree}/${change.document}") != text
+
+    if !force && !pending.nil then abort(Workspace.Error(Workspace.Reason.Edited(pending.size)))
 
     Disk.files(pristine(store)).each: document =>
       if !written.contains(document) then

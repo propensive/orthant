@@ -877,6 +877,27 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == t"↯/o.4.2")
 
+      // As in a fresh clone of a repository which tracks some of the working tree's files: none
+      // was checked out, so all are new, but they hold what a check-out would write.
+      def unrecorded(store: Workspace): Unit =
+        val pristine = t"${store.work}/pristine"
+        Disk.files(pristine).each { file => Disk.remove(t"$pristine/$file", pristine) }
+
+      test(m"A check-out over files which hold what it writes is not refused"):
+        val store = populated()
+        unrecorded(store)
+        Worktree.checkout(store, Worktree.view(store), false)
+
+      . assert(_ == 1)
+
+      test(m"A check-out over a new file which it would change is refused"):
+        val store = populated()
+        unrecorded(store)
+        edit(store, t"guide/intro.md", t"Edited.\n")
+        code(Worktree.checkout(store, Worktree.view(store), false))
+
+      . assert(_ == t"↯/o.4.2")
+
       test(m"A forced check-out discards the edits"):
         val store = populated()
         edit(store, t"guide/intro.md", t"Edited.\n")
