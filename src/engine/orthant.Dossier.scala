@@ -18,6 +18,8 @@
                                                                                                   */
 package orthant
 
+import scala.annotation.tailrec
+
 import proscenium.{List, Nil, Map, `::`}
 import soundness.*
 import soundness.dysasymptotics.linearSize
@@ -40,6 +42,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
   // kept, as it is unchanged.
   private def retain(point: Point, folio: Optional[Folio]): Dossier raises Axis.Error =
     val result = hold(point, folio)
+
     memo.foreach: (other, rendition) =>
       if !space.below(other, point) then result.memo(other) = rendition
 
@@ -80,7 +83,10 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
         case _ =>
           apply(deltas.reverse)
 
-      def apply(deltas: List[Point]): Optional[Rendition] = rendition(parent).let(_.content).let: reference =>
+      def apply(deltas: List[Point]): Optional[Rendition] =
+        rendition(parent).let(_.content).let(render(deltas, _))
+
+      def render(deltas: List[Point], reference: Content): Rendition =
         val placed: List[Placement | Issue] = deltas.bind: origin =>
           val hunks: List[Hunk] =
             folios.at(origin).let(_.only { case Folio.Delta(_, hunks) => hunks }).or(Nil)
@@ -138,53 +144,65 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
     // numbered as it is accepted: of several which a candidate overlaps, the latest is its rival.
     val spans = java.util.TreeMap[Integer, (Int, Placement)]()
     val points = java.util.TreeMap[Integer, (Int, Placement)]()
-    var accepted: scala.List[Placement] = scala.Nil
-    var conflicts: scala.List[Issue] = scala.Nil
-    var number = 0
 
     def rival(candidate: Placement): Optional[Placement] =
-      var best: Optional[(Int, Placement)] = Unset
+      val start = Integer.valueOf(candidate.start)
+      val end = Integer.valueOf(candidate.end)
 
-      def offer(found: (Int, Placement) | Null): Unit =
-        if found != null then
-          val pair = found.asInstanceOf[(Int, Placement)]
-          if pair(1).overlaps(candidate) && best.lay(true)(_(0) < pair(0)) then best = pair
+      def offer(best: Optional[(Int, Placement)], found: Optional[(Int, Placement)])
+      :   Optional[(Int, Placement)] =
 
-      def valueOf(entry: java.util.Map.Entry[Integer, (Int, Placement)] | Null)
-      :   (Int, Placement) | Null =
+        found.lay(best): pair =>
+          if pair(1).overlaps(candidate) && best.lay(true)(_(0) < pair(0)) then pair else best
 
-        if entry == null then null else entry.getValue
+      @tailrec
+      def scan(values: java.util.Iterator[(Int, Placement)], best: Optional[(Int, Placement)])
+      :   Optional[(Int, Placement)] =
 
-      if candidate.start == candidate.end then
-        offer(points.get(Integer.valueOf(candidate.start)))
-        offer(valueOf(spans.lowerEntry(Integer.valueOf(candidate.start))))
-      else
-        offer(valueOf(spans.lowerEntry(Integer.valueOf(candidate.start))))
+        if !values.hasNext then best else scan(values, offer(best, values.next.nn))
 
-        spans.subMap(Integer.valueOf(candidate.start), true, Integer.valueOf(candidate.end), false)
-        . nn.values.nn.forEach(offer(_))
+      val preceding: Optional[(Int, Placement)] =
+        Optional(spans.lowerEntry(start)).let(_.getValue.nn)
 
-        points.subMap(Integer.valueOf(candidate.start), false, Integer.valueOf(candidate.end), false)
-        . nn.values.nn.forEach(offer(_))
+      val best: Optional[(Int, Placement)] =
+        if candidate.start == candidate.end
+        then offer(offer(Unset, Optional(points.get(start))), preceding)
+        else
+          val spanning = spans.subMap(start, true, end, false).nn.values.nn.iterator.nn
+          val inserting = points.subMap(start, false, end, false).nn.values.nn.iterator.nn
+          scan(inserting, scan(spanning, offer(Unset, preceding)))
 
       best.let(_(1))
 
-    ranked.each: candidate =>
-      rival(candidate).lay
-        ( {
-            number += 1
-            accepted = candidate :: accepted
+    // Each candidate is accepted unless it has a rival, with which it may conflict.
+    @tailrec
+    def accept
+      ( todo:      scala.List[Placement],
+        accepted:  scala.List[Placement],
+        conflicts: scala.List[Issue],
+        number:    Int )
+    :   (scala.List[Placement], scala.List[Issue]) =
 
+      if todo.isEmpty then (accepted, conflicts) else
+        val candidate = todo.head
+
+        rival(candidate) match
+          case rival: Placement =>
+            val below = space.below(candidate.origin, rival.origin)
+            val comparable = below || space.below(rival.origin, candidate.origin)
+
+            if comparable || rival.fresh != candidate.fresh || rival.lines == candidate.lines
+            then accept(todo.tail, accepted, conflicts, number)
+            else accept(todo.tail, accepted, Issue.Conflict(rival, candidate) :: conflicts, number)
+
+          case _ =>
             if candidate.start == candidate.end
-            then points.put(Integer.valueOf(candidate.start), (number, candidate))
-            else spans.put(Integer.valueOf(candidate.start), (number, candidate))
-            () } ): rival =>
-        val comparable =
-          space.below(candidate.origin, rival.origin) ||
-            space.below(rival.origin, candidate.origin)
+            then points.put(Integer.valueOf(candidate.start), (number + 1, candidate))
+            else spans.put(Integer.valueOf(candidate.start), (number + 1, candidate))
 
-        if !(comparable || rival.fresh != candidate.fresh || rival.lines == candidate.lines)
-        then conflicts = Issue.Conflict(rival, candidate) :: conflicts
+            accept(todo.tail, candidate :: accepted, conflicts, number + 1)
+
+    val (accepted, conflicts) = accept(ranked.stdlib, scala.Nil, scala.Nil, 0)
 
     val ordered =
       List.from(accepted).order: placement =>
@@ -192,18 +210,13 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
 
     val buffer = scala.collection.mutable.ListBuffer[Text]()
     val placed = scala.collection.mutable.ListBuffer[Placement]()
-    var position = 0
-    var count = 0
 
-    ordered.each: placement =>
-      val shared = reference.slice(position, placement.start).stdlib
-      buffer ++= shared
-      val from = count + shared.length
-      val size = placement.lines.stdlib.length
+    val position = ordered.fold(0): (position, placement) =>
+      buffer ++= reference.slice(position, placement.start).stdlib
+      val from = buffer.length
       buffer ++= placement.lines.stdlib
-      placed += placement.copy(from = from, to = from + size)
-      count = from + size
-      position = placement.end
+      placed += placement.copy(from = from, to = buffer.length)
+      placement.end
 
     buffer ++= reference.slice(position, reference.size).stdlib
     val lines = List.from(buffer.toList)
@@ -254,21 +267,16 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
           val kinds: scala.collection.immutable.Map[Hunk, Kind] =
             val rendition = whole.rendition(point)
             val all: scala.Array[Placement] = rendition.let(_.candidates).or(Nil).stdlib.toArray
-            val spans = all.filter { placement => placement.start < placement.end }
+            val spans = all.filter: placement => placement.start < placement.end
             val starts: scala.Array[Int] = spans.map(_.start).sorted
             val ends: scala.Array[Int] = spans.map(_.end).sorted
-            val gaps: scala.Array[Int] = all.filter { placement => placement.start == placement.end }.map(_.start).sorted
+
+            val gaps: scala.Array[Int] =
+              all.filter { placement => placement.start == placement.end }.map(_.start).sorted
 
             // How many of the sorted numbers are less than `bound`.
             def below(sorted: scala.Array[Int], bound: Int): Int =
-              var low = 0
-              var high = sorted.length
-
-              while low < high do
-                val middle = (low + high)/2
-                if sorted(middle) < bound then low = middle + 1 else high = middle
-
-              low
+              Content.search(sorted.length)(sorted(_) >= bound)
 
             // How many other located hunks a placement overlaps.
             def overlaps(placement: Placement): Int =
@@ -280,28 +288,28 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
                   below(gaps, placement.end) - below(gaps, placement.start + 1)
 
             val inherited: scala.collection.immutable.Map[(Int, Int), scala.Array[Placement]] =
-              all.filter(_.origin != point).groupBy { placement => (placement.start, placement.end) }
+              all.filter(_.origin != point).groupBy: placement => (placement.start, placement.end)
 
             val translated = translation(point)
             val reference = rendition.let(_.base)
 
             def unaccounted(placement: Placement): Int = reference.lay(0): reference =>
-              var count = 0
-              var line = placement.start
+              @tailrec
+              def tally(line: Int, count: Int): Int =
+                if line >= placement.end then count
+                else tally(line + 1, if reference(line) != t"" then count + 1 else count)
 
-              while line < placement.end do
-                if reference(line) != t"" then count += 1
-                line += 1
-
-              count
+              tally(placement.start, 0)
 
             val own = all.filter(_.origin == point)
+
             val twice: scala.collection.immutable.Set[Hunk] =
               own.groupBy(_.hunk).filter(_(1).length > 1).keySet
 
-            scala.collection.immutable.Map.from(own.iterator.map: placement =>
+            val pairs = own.iterator.map: placement =>
               val count = overlaps(placement)
-              val twins = inherited.getOrElse((placement.start, placement.end), scala.Array[Placement]())
+              val none = scala.Array[Placement]()
+              val twins = inherited.getOrElse((placement.start, placement.end), none)
 
               val kind: Kind =
                 if twice.contains(placement.hunk) then Kind.Tangled
@@ -313,9 +321,12 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
                   Kind.Twin
                     ( twins(0).lines == placement.lines,
                       (if twins(0).fresh then 0 else 1) - (if placement.fresh then 0 else 1) )
-                else Kind.Tangled
+                else
+                  Kind.Tangled
 
-              placement.hunk -> kind )
+              placement.hunk -> kind
+
+            scala.collection.immutable.Map.from(pairs)
 
           // The kinds say what a hunk's going would change in content which is the lines: if
           // the hunks do not give the lines, two of them being at one place, each is tried.
@@ -324,30 +335,31 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
           // Dropping one may leave another with nothing to do, so this repeats until none goes.
           def prune(hunks: List[Hunk], issues0: Int, pending0: Int): List[Hunk] =
             val gone = scala.collection.mutable.HashSet[Hunk]()
-            var current = (issues0, pending0)
             def left: List[Hunk] = if gone.isEmpty then hunks else hunks.filter(!gone.contains(_))
 
-            hunks.each: hunk =>
-              if !gone.contains(hunk) then (if sound then kinds.getOrElse(hunk, Kind.Tangled) else Kind.Tangled) match
+            val current = hunks.fold((issues0, pending0)): (current, hunk) =>
+              val kind = if sound then kinds.getOrElse(hunk, Kind.Tangled) else Kind.Tangled
+
+              if gone.contains(hunk) then current else kind match
                 case Kind.Needed =>
-                  ()
+                  current
 
                 case Kind.Alone(more) =>
-                  if current(1) + more <= pending then
+                  if current(1) + more > pending then current else
                     gone += hunk
-                    current = (current(0), current(1) + more)
+                    (current(0), current(1) + more)
 
                 case Kind.Twin(same, more) =>
-                  if same && current(0) + more <= issues then
+                  if !same || current(0) + more > issues then current else
                     gone += hunk
-                    current = (current(0) + more, current(1))
+                    (current(0) + more, current(1))
 
                 case Kind.Tangled =>
                   val fewer = held(left.filter(_ != hunk))
 
-                  if same(fewer) then
+                  if !same(fewer) then current else
                     gone += hunk
-                    current = (fewer.issues(point).size, fewer.pending(point).size)
+                    (fewer.issues(point).size, fewer.pending(point).size)
 
             if gone.isEmpty then hunks else prune(left, current(0), current(1))
 
@@ -401,18 +413,12 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
       val covered = new scala.Array[Boolean](reference.size)
 
       rendition.placements.each: placement =>
-        var line = placement.start
-
-        while line < placement.end && line < covered.length do
-          covered(line) = true
-          line += 1
+        Content.ascend(placement.start, placement.end.min(covered.length))(covered(_) = true)
 
       val found = scala.collection.mutable.ListBuffer[Int]()
-      var index = 0
 
-      while index < covered.length do
+      Content.ascend(0, covered.length): index =>
         if reference(index) != t"" && !covered(index) then found += index
-        index += 1
 
       List.from(found.toList)
 

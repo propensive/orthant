@@ -43,7 +43,7 @@ object Content:
 
   // Performs `action` on each index from `from` up to, not including, `to`.
   @tailrec
-  private def ascend(from: Int, to: Int)(action: Int => Unit): Unit =
+  def ascend(from: Int, to: Int)(action: Int => Unit): Unit =
     if from < to then
       action(from)
       ascend(from + 1, to)(action)
