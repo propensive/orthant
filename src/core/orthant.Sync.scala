@@ -18,6 +18,8 @@
                                                                                                   */
 package orthant
 
+import scala.annotation.tailrec
+
 import proscenium.{List, Nil, `::`}
 import soundness.*
 import soundness.collationComparable
@@ -108,7 +110,8 @@ object Sync:
           tags.each: (tag, hash) =>
             val todo = scala.collection.mutable.Stack[Text](hash)
 
-            while !todo.isEmpty do
+            @tailrec
+            def explore(): Unit = if !todo.isEmpty then
               val next = todo.pop()
 
               if !parents.contains(next) then
@@ -117,7 +120,11 @@ object Sync:
                   case _                         => scala.Nil
 
                 parents(next) = above
-                above.foreach { parent => if !parents.contains(parent) then todo.push(parent) }
+                above.foreach: parent => if !parents.contains(parent) then todo.push(parent)
+
+              explore()
+
+            explore()
 
           // Which of the tagged commits and branch tips each commit has beneath it, itself
           // included: a set of bits, made for each commit from its parents', parents first.
@@ -125,27 +132,31 @@ object Sync:
             (tags.stdlib.map(_(1)) ++ branches.stdlib.map(_(1))).distinct.toArray
 
           val bit = scala.collection.mutable.HashMap[Text, Int]()
-          marked.indices.foreach { index => bit(marked(index)) = index }
+          marked.indices.foreach: index => bit(marked(index)) = index
           val words = (marked.length + 63)/64
           val beneath = scala.collection.mutable.HashMap[Text, scala.Array[Long]]()
 
           parents.keys.foreach: start =>
             val todo = scala.collection.mutable.Stack[(Text, Boolean)]((start, false))
 
-            while !todo.isEmpty do
+            // A commit's bits are made once its parents' are, or once they are being made.
+            def ready(parent: Text): Boolean = beneath.contains(parent) || !parents.contains(parent)
+
+            @tailrec
+            def explore(): Unit = if !todo.isEmpty then
               val (commit, expanded) = todo.pop()
 
               if !beneath.contains(commit) then
                 val above = parents.getOrElse(commit, scala.Nil)
 
-                if expanded || above.forall { parent => beneath.contains(parent) || !parents.contains(parent) } then
+                if expanded || above.forall(ready) then
                   val bits = new scala.Array[Long](words)
 
                   above.foreach: parent =>
                     beneath.get(parent).foreach: theirs =>
-                      bits.indices.foreach { word => bits(word) |= theirs(word) }
+                      bits.indices.foreach: word => bits(word) |= theirs(word)
 
-                  bit.get(commit).foreach { index => bits(index/64) |= 1L << (index%64) }
+                  bit.get(commit).foreach: index => bits(index/64) |= 1L << (index%64)
                   beneath(commit) = bits
                 else
                   todo.push((commit, true))
@@ -154,12 +165,17 @@ object Sync:
                     if !beneath.contains(parent) && parents.contains(parent)
                     then todo.push((parent, false))
 
+              explore()
+
+            explore()
+
           val known = scala.collection.mutable.HashMap[(Text, Text), Boolean]()
 
           def ancestor(upper: Text, lower: Text): Boolean =
             if upper == lower then true else
               (bit.get(upper), beneath.get(lower)) match
                 case (Some(index), Some(bits)) => (bits(index/64) & (1L << (index%64))) != 0
+
                 case _ =>
                   known.getOrElseUpdate
                     ( (upper, lower),
@@ -253,9 +269,7 @@ object Sync:
     val base = entry.value.filter(_.parent.absent).head.let(_.commit)
 
     val tags =
-      refs.tags.filter: (tag, hash) =>
-        takes(pattern, tag) && base.lay(true)(refs.ancestor(_, hash))
-
+      refs.tags.filter: (tag, hash) => takes(pattern, tag) && base.lay(true)(refs.ancestor(_, hash))
       . order(_(0))
 
     // A tag of a commit which is already a value is one more label for it.
