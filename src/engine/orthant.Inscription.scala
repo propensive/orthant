@@ -18,6 +18,8 @@
                                                                                                   */
 package orthant
 
+import scala.annotation.tailrec
+
 import proscenium.{List, Nil, `::`}
 import soundness.*
 import soundness.dysasymptotics.linearSize
@@ -66,14 +68,7 @@ object Inscription:
 
     // How many of the placements, which are in order by `key`, have a `key` less than `bound`.
     def fewer(key: Placement => Int, bound: Int): Int =
-      var low = 0
-      var high = placed.length
-
-      while low < high do
-        val middle = (low + high)/2
-        if key(placed(middle)) < bound then low = middle + 1 else high = middle
-
-      low
+      Content.search(placed.length): index => key(placed(index)) >= bound
 
     def widen(region: Region): Interval =
       def holder(line: Int): Optional[Placement] =
@@ -120,24 +115,20 @@ object Inscription:
     // Where a boundary of the rendered content falls in the new lines: before anything inserted
     // there, or after it. A boundary is never within a change, only at an end of one.
     def positions(boundary: Int): List[Int] =
-      var low = 0
-      var high = changes.length
-
-      while low < high do
-        val middle = (low + high)/2
-        if changes(middle).to < boundary then low = middle + 1 else high = middle
-
       val found = scala.collection.mutable.ListBuffer[Int]()
 
-      while low < changes.length && changes(low).from <= boundary do
-        val region = changes(low)
+      @tailrec
+      def gather(index: Int): Unit =
+        if index < changes.length && changes(index).from <= boundary then
+          val region = changes(index)
 
-        if !region.changed then found += region.from2 + boundary - region.from else
-          if region.from == boundary then found += region.from2
-          if region.to == boundary then found += region.to2
+          if !region.changed then found += region.from2 + boundary - region.from else
+            if region.from == boundary then found += region.from2
+            if region.to == boundary then found += region.to2
 
-        low += 1
+          gather(index + 1)
 
+      gather(Content.search(changes.length)(changes(_).to >= boundary))
       List.from(found.toList)
 
     def before(boundary: Int): Int = positions(boundary).fold(lines.size)(_.min(_))
@@ -157,19 +148,21 @@ object Inscription:
 
     def absorbed(interval: Interval): List[Placement] =
       val found = scala.collection.mutable.ListBuffer[Placement]()
-      var index = fewer(_.from, interval.from)
 
-      while index < placed.length && placed(index).from < interval.to do
-        val placement = placed(index)
+      @tailrec
+      def gather(index: Int): Unit =
+        if index < placed.length && placed(index).from < interval.to then
+          val placement = placed(index)
 
-        val within =
-          if placement.from == placement.to
-          then interval.from < placement.from && placement.from < interval.to
-          else interval.from <= placement.from && placement.to <= interval.to
+          val within =
+            if placement.from == placement.to
+            then interval.from < placement.from && placement.from < interval.to
+            else interval.from <= placement.from && placement.to <= interval.to
 
-        if within then found += placement
-        index += 1
+          if within then found += placement
+          gather(index + 1)
 
+      gather(fewer(_.from, interval.from))
       List.from(found.toList)
 
     def span(interval: Interval): (Int, Int) =
@@ -184,12 +177,15 @@ object Inscription:
         val probe = Placement(start, end, Hunk(Nil, Nil), point, true, Nil)
         val within = absorbed(interval).stdlib.toSet
         val found = scala.collection.mutable.ListBuffer[Placement]()
-        var index = fewer(_.end, start)
 
-        while index < placed.length && placed(index).start <= end do
-          if !within.contains(placed(index)) && placed(index).overlaps(probe) then found += placed(index)
-          index += 1
+        @tailrec
+        def gather(index: Int): Unit =
+          if index < placed.length && placed(index).start <= end then
+            val placement = placed(index)
+            if !within.contains(placement) && placement.overlaps(probe) then found += placement
+            gather(index + 1)
 
+        gather(fewer(_.end, start))
         val rivals = List.from(found.toList)
 
         rivals.fold(interval): (interval, rival) =>
