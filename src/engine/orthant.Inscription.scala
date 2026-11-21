@@ -18,6 +18,8 @@
                                                                                                   */
 package orthant
 
+import scala.annotation.tailrec
+
 import proscenium.{List, Nil, `::`}
 import soundness.*
 import soundness.dysasymptotics.linearSize
@@ -28,19 +30,19 @@ object Inscription:
   // The hunk with the least context before it that makes its anchor occur once, where it is, in
   // the reference; if every line before it is not enough, it is anchored to the document's start.
   def anchor(hunk: Hunk, start: Int, reference: List[Text]): Hunk =
+    anchor(hunk, start, Content(reference))
+
+  def anchor(hunk: Hunk, start: Int, reference: Content): Hunk =
     val bare = hunk.copy(before = Nil, after = Nil, start = false, end = false)
+    val size = bare.replaced.size
 
-    def recur(count: Int): Hunk =
-      val candidate = bare.copy(before = reference.excerpt(start - count, start))
+    // An insertion is anchored by a line of context at least, or by the document's start.
+    val count: Optional[Int] =
+      if reference.slice(start, start + size) != bare.replaced then Unset
+      else reference.anchor(start, size, bare.insertion)
 
-      // An insertion is anchored by a line of context at least, or by the document's start.
-      val anchored = !bare.insertion || count > 0
-
-      if anchored && Rebase.occurrences(candidate, reference) == List(start) then candidate
-      else if count >= start then candidate.copy(start = true)
-      else recur(count + 1)
-
-    recur(0)
+    count.lay(bare.copy(before = reference.slice(0, start), start = true)): count =>
+      bare.copy(before = reference.slice(start - count, start))
 
   // A run of the rendered content, between two of its line boundaries, which a change touches,
   // widened so that it cuts through no hunk.
@@ -55,15 +57,27 @@ object Inscription:
 
     val regions = Region.between(rendition.lines, lines)
     val placements = rendition.placements
-    val reference = rendition.reference
+    val reference = rendition.base
+    val target = Content(lines)
     val size = rendition.lines.size
+
+    // The placements are in order, in the reference and in the rendered content alike, and no
+    // two of them overlap in either: each is sought by a binary search.
+    val placed: scala.Array[Placement] = placements.stdlib.toArray
+    val changes: scala.Array[Region] = regions.stdlib.toArray
+
+    // How many of the placements, which are in order by `key`, have a `key` less than `bound`.
+    def fewer(key: Placement => Int, bound: Int): Int =
+      Content.search(placed.length): index => key(placed(index)) >= bound
 
     def widen(region: Region): Interval =
       def holder(line: Int): Optional[Placement] =
-        placements.filter { placement => placement.from <= line && line < placement.to }.head
+        val index = fewer(_.to, line + 1)
+        if index < placed.length && placed(index).from <= line then placed(index) else Unset
 
       def straddler(boundary: Int): Optional[Placement] =
-        placements.filter { placement => placement.from < boundary && boundary < placement.to }.head
+        val index = fewer(_.to, boundary + 1)
+        if index < placed.length && placed(index).from < boundary then placed(index) else Unset
 
       if region.from == region.to
       then
@@ -75,8 +89,11 @@ object Inscription:
             holder(region.to - 1).let(_.to).or(region.to) )
 
     // Whether lines were inserted exactly at a boundary of the rendered content.
-    def inserted(boundary: Int): Boolean = regions.exists: region =>
-      region.changed && region.from == boundary && region.to == boundary
+    val insertions: scala.collection.immutable.Set[Int] =
+      scala.collection.immutable.Set.from:
+        changes.iterator.filter { region => region.changed && region.from == region.to }.map(_.from)
+
+    def inserted(boundary: Int): Boolean = insertions.contains(boundary)
 
     // Intervals which overlap are one, as are two which meet where one of them is empty, or where
     // lines were inserted, which would otherwise belong to both.
@@ -98,11 +115,21 @@ object Inscription:
     // Where a boundary of the rendered content falls in the new lines: before anything inserted
     // there, or after it. A boundary is never within a change, only at an end of one.
     def positions(boundary: Int): List[Int] =
-      regions.filter { region => region.from <= boundary && boundary <= region.to }.bind: region =>
-        if !region.changed then List(region.from2 + boundary - region.from)
-        else
-          (if region.from == boundary then List(region.from2) else Nil) +
-            (if region.to == boundary then List(region.to2) else Nil)
+      val found = scala.collection.mutable.ListBuffer[Int]()
+
+      @tailrec
+      def gather(index: Int): Unit =
+        if index < changes.length && changes(index).from <= boundary then
+          val region = changes(index)
+
+          if !region.changed then found += region.from2 + boundary - region.from else
+            if region.from == boundary then found += region.from2
+            if region.to == boundary then found += region.to2
+
+          gather(index + 1)
+
+      gather(Content.search(changes.length)(changes(_).to >= boundary))
+      List.from(found.toList)
 
     def before(boundary: Int): Int = positions(boundary).fold(lines.size)(_.min(_))
     def after(boundary: Int): Int = positions(boundary).fold(0)(_.max(_))
@@ -110,17 +137,33 @@ object Inscription:
     // Where a boundary of the rendered content falls in the reference: after any hunk which ends
     // there, or before any which begins there.
     def beyond(boundary: Int): Int =
-      placements.filter(_.to <= boundary).last.let: last => last.end + boundary - last.to
-      . or(boundary)
+      val count = fewer(_.to, boundary + 1)
+      if count == 0 then boundary else placed(count - 1).end + boundary - placed(count - 1).to
 
     def short(boundary: Int): Int =
-      placements.filter(_.from >= boundary).head.let: next => next.start - (next.from - boundary)
-      . or(reference.size - (size - boundary))
+      val index = fewer(_.from, boundary)
 
-    def absorbed(interval: Interval): List[Placement] = placements.filter: placement =>
-      if placement.from == placement.to
-      then interval.from < placement.from && placement.from < interval.to
-      else interval.from <= placement.from && placement.to <= interval.to
+      if index == placed.length then reference.size - (size - boundary)
+      else placed(index).start - (placed(index).from - boundary)
+
+    def absorbed(interval: Interval): List[Placement] =
+      val found = scala.collection.mutable.ListBuffer[Placement]()
+
+      @tailrec
+      def gather(index: Int): Unit =
+        if index < placed.length && placed(index).from < interval.to then
+          val placement = placed(index)
+
+          val within =
+            if placement.from == placement.to
+            then interval.from < placement.from && placement.from < interval.to
+            else interval.from <= placement.from && placement.to <= interval.to
+
+          if within then found += placement
+          gather(index + 1)
+
+      gather(fewer(_.from, interval.from))
+      List.from(found.toList)
 
     def span(interval: Interval): (Int, Int) =
       val end = short(interval.to)
@@ -132,10 +175,18 @@ object Inscription:
       val grown = intervals.map: interval =>
         val (start, end) = span(interval)
         val probe = Placement(start, end, Hunk(Nil, Nil), point, true, Nil)
-        val within = absorbed(interval)
+        val within = absorbed(interval).stdlib.toSet
+        val found = scala.collection.mutable.ListBuffer[Placement]()
 
-        val rivals =
-          placements.filter: placement => !within.has(placement) && placement.overlaps(probe)
+        @tailrec
+        def gather(index: Int): Unit =
+          if index < placed.length && placed(index).start <= end then
+            val placement = placed(index)
+            if !within.contains(placement) && placement.overlaps(probe) then found += placement
+            gather(index + 1)
+
+        gather(fewer(_.end, start))
+        val rivals = List.from(found.toList)
 
         rivals.fold(interval): (interval, rival) =>
           Interval(interval.from.min(rival.from), interval.to.max(rival.to))
@@ -146,7 +197,7 @@ object Inscription:
 
     val fresh: List[(Int, Hunk)] = intervals.bind: interval =>
       val (start, end) = span(interval)
-      val text = lines.excerpt(before(interval.from), after(interval.to))
+      val text = target.slice(before(interval.from), after(interval.to))
       val probe = Placement(start, end, Hunk(Nil, Nil), point, true, Nil)
 
       // A stale hunk which is edited, alone, is still stale: only confirming it clears that.
@@ -164,14 +215,14 @@ object Inscription:
       val stops = absorbed(interval).filter(!_.overlaps(probe)).map(_.start).distinct.map: gap =>
         (gap, Hunk(Nil, Nil))
 
-      (start, Hunk(reference.excerpt(start, end), text, former = former)) :: stops
+      (start, Hunk(reference.slice(start, end), text, former = former)) :: stops
 
-    val taken = intervals.bind(absorbed)
+    val taken = intervals.bind(absorbed).stdlib.toSet
 
     val kept: List[(Int, Hunk)] =
-      placements.filter: placement => placement.origin == point && !taken.has(placement)
+      placements.filter: placement => placement.origin == point && !taken.contains(placement)
       . map: placement => (placement.start, placement.hunk)
 
-    (kept + fresh.map { (start, hunk) => (start, anchor(hunk, start, reference)) })
+    (kept + fresh.map { (start, hunk) => (start, anchor(hunk, start, rendition.base)) })
     . order: (start, hunk) => hunk.rank(start)
     . map(_(1))

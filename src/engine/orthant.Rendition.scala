@@ -60,3 +60,10 @@ case class Rendition
     reference:  List[Text]      = Nil,
     placements: List[Placement] = Nil,
     issues:     List[Issue]     = Nil )
+  ( shared: Optional[Content] = Unset, val candidates: List[Placement] = Nil ):
+
+  // The lines, and the reference's lines, indexed: `shared` is the reference's index where the
+  // storage parent's rendition has it already. `candidates` are the hunks which were located,
+  // of which `placements` are those which were applied.
+  lazy val content: Content = Content(lines)
+  lazy val base: Content = shared.or(Content(reference))

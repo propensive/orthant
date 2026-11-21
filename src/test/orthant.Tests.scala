@@ -877,6 +877,27 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == t"↯/o.4.2")
 
+      // As in a fresh clone of a repository which tracks some of the working tree's files: none
+      // was checked out, so all are new, but they hold what a check-out would write.
+      def unrecorded(store: Workspace): Unit =
+        val pristine = t"${store.work}/pristine"
+        Disk.files(pristine).each: file => Disk.remove(t"$pristine/$file", pristine)
+
+      test(m"A check-out over files which hold what it writes is not refused"):
+        val store = populated()
+        unrecorded(store)
+        Worktree.checkout(store, Worktree.view(store), false)
+
+      . assert(_ == 1)
+
+      test(m"A check-out over a new file which it would change is refused"):
+        val store = populated()
+        unrecorded(store)
+        edit(store, t"guide/intro.md", t"Edited.\n")
+        code(Worktree.checkout(store, Worktree.view(store), false))
+
+      . assert(_ == t"↯/o.4.2")
+
       test(m"A forced check-out discards the edits"):
         val store = populated()
         edit(store, t"guide/intro.md", t"Edited.\n")
@@ -1772,6 +1793,17 @@ object Tests extends Suite(m"Orthant tests"):
         code(Sync(store, t"release", early, Nil))
 
       . assert(_ == t"↯/o.7.4")
+
+    suite(m"Growth"):
+      // Doubling the size twice multiplies a linear cost by four, and a quadratic one by
+      // sixteen; anything over eight is taken to be worse than linear.
+      test(m"Derivation, check-in and views grow linearly with the document"):
+        Growth.cost(500)
+        val small = Growth.cost(1000)
+        val large = Growth.cost(4000)
+        large.toDouble/small.toDouble
+
+      . assert(_ < 8.0)
 
     suite(m"Invariants over random check-ins"):
       List.range(1, 41).each: seed =>

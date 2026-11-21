@@ -169,7 +169,7 @@ object Store:
 
   // The configuration, which is refused unless it is all that §6.2 and §7 of the specification
   // require: nothing is made of one which is not.
-  private def configuration[source: Perusable](home: source): Settings raises Error =
+  private[orthant] def configuration[source: Perusable](home: source): Settings raises Error =
     val file = t"${source.name(home)}/$config"
     val missing = Error(Reason.Missing(source.name(home)))
     val text = decode(file, source.data(home, config).or(abort(missing)))

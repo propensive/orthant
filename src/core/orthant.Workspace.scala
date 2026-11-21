@@ -155,6 +155,9 @@ object Workspace:
 
     Workspace(root, new Store(settings, Store.sound(settings.space), Map())).configure(settings)
 
+  // The configuration of the store beneath `root`, alone: no record is read.
+  def settings(root: Text): Settings raises Store.Error = Store.configuration(Disk.path(root))
+
   // The store beneath `root`, and everything which is wrong with what it holds. A file which
   // cannot be read as a record is left out.
   def scan(root: Text): (Workspace, List[Store.Error]) raises Store.Error =
