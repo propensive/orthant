@@ -881,7 +881,7 @@ object Tests extends Suite(m"Orthant tests"):
       // was checked out, so all are new, but they hold what a check-out would write.
       def unrecorded(store: Workspace): Unit =
         val pristine = t"${store.work}/pristine"
-        Disk.files(pristine).each { file => Disk.remove(t"$pristine/$file", pristine) }
+        Disk.files(pristine).each: file => Disk.remove(t"$pristine/$file", pristine)
 
       test(m"A check-out over files which hold what it writes is not refused"):
         val store = populated()

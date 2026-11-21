@@ -36,14 +36,17 @@ def fingerprint(from: Int, to: Int): Unit =
         case delta: Folio.Delta   => Delta.serialize(delta).join(t"\n").s
         case absent: Folio.Absent => Delta.serialize(absent).join(t"\n").s
         case Folio.Base(lines)    => "base "+lines.join(t"\n").s
+
       . or("none")
 
       val derived: String = safely(dossier.rendition(point)).let: rendition =>
-        rendition.lines.join(t"\n").s+"#"+rendition.placements.map: placement =>
-          placement.start.toString+"-"+placement.end.toString+placement.fresh.toString+
-            name(placement.origin).s+placement.lines.join(t"|").s+placement.from.toString
-        . stdlib.mkString(";")+"#"+rendition.issues.size.toString+"#"+
-          dossier.pending(point).stdlib.mkString(",")
+        val placements = rendition.placements.map: placement =>
+          placement.start.toString + "-" + placement.end.toString + placement.fresh.toString +
+            name(placement.origin).s + placement.lines.join(t"|").s + placement.from.toString
+
+        rendition.lines.join(t"\n").s + "#" + placements.stdlib.mkString(";") + "#" +
+          rendition.issues.size.toString + "#" + dossier.pending(point).stdlib.mkString(",")
+
       . or("absent")
 
       (folio+"@"+derived).hashCode

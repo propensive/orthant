@@ -36,6 +36,7 @@ def retros(from: Int, to: Int): Unit =
         case delta: Folio.Delta   => Delta.serialize(delta).join(t"\n").s
         case absent: Folio.Absent => Delta.serialize(absent).join(t"\n").s
         case Folio.Base(lines)    => "base "+lines.join(t"\n").s
+
       . or("none")
       . hashCode
 
@@ -44,7 +45,7 @@ def retros(from: Int, to: Int): Unit =
   def attempt(dossier: Dossier)(action: => Dossier): Int =
     try digest(action)
     catch
-      case error: Checkin.Error => ("error "+error.reason.toString).hashCode
+      case error: Checkin.Error      => ("error "+error.reason.toString).hashCode
       case error: orthant.Axis.Error => "axis".hashCode
 
   List.range(from, to).each: seed =>

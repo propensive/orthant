@@ -28,8 +28,12 @@ import soundness.dysasymptotics.linearSize
 object Growth:
   import strategies.throwUnsafely
 
-  val language = orthant.Axis(t"language", List(Value(t"en"), Value(t"fr", t"en", translation = true)))
-  val release = orthant.Axis(t"release", List(Value(t"v1"), Value(t"v2", t"v1"), Value(t"v3", t"v2")))
+  val language =
+    orthant.Axis(t"language", List(Value(t"en"), Value(t"fr", t"en", translation = true)))
+
+  val release =
+    orthant.Axis(t"release", List(Value(t"v1"), Value(t"v2", t"v1"), Value(t"v3", t"v2")))
+
   val space = Space(List(language, release))
 
   def at(language: Text, release: Text): Point =
@@ -38,7 +42,7 @@ object Growth:
   def line(index: Int): Text = if index%7 == 6 then t"" else t"Line $index of the play."
 
   def french(lines: List[Text]): List[Text] =
-    lines.map { text => if text == t"" then text else t"Fr: $text" }
+    lines.map: text => if text == t"" then text else t"Fr: $text"
 
   // The document's English at each release, and the dossier holding it and the translation.
   // Each release changes ten lines and inserts five, wherever the document's size puts them.
@@ -106,4 +110,5 @@ def growthTimes(sizes: Int*): Unit =
     val best = List.range(0, 3).map(_ => Growth.operations(second, dossier)).fold(List[Long]()):
       (best, next) => if best.nil then next else best.zip(next).map(_.min(_))
 
-    java.lang.System.out.nn.println(size.toString+": "+best.map(_/1000000).stdlib.mkString(" ms, ")+" ms")
+    val times = best.map(_/1000000).stdlib.mkString(" ms, ")
+    java.lang.System.out.nn.println(size.toString+": "+times+" ms")

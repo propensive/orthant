@@ -43,12 +43,11 @@ def timing(root: String): Unit =
     val lines = store.documents.map: document =>
       store.dossier(document).content(point).let(_.size).or(0)
 
-    val issues = store.documents.map { document => store.dossier(document).issues(point).size }
-    val pending = store.documents.map { document => store.dossier(document).pending(point).size }
+    val issues = store.documents.map: document => store.dossier(document).issues(point).size
+    val pending = store.documents.map: document => store.dossier(document).pending(point).size
+    val total = lines.fold(0)(_ + _).toString+" lines, "+issues.fold(0)(_ + _).toString+" issues, "
 
-    say:
-      store.name(point).s+": "+lines.fold(0)(_ + _).toString+" lines, "+issues.fold(0)(_ + _).toString+
-        " issues, "+pending.fold(0)(_ + _).toString+" pending in "+since(begin)
+    say(store.name(point).s+": "+total+pending.fold(0)(_ + _).toString+" pending in "+since(begin))
 
   val check = now
   say("faults: "+store.faults.size.toString+" in "+since(check))
@@ -66,7 +65,9 @@ def timingCheckin(root: String, count: Int): Unit =
   val last = store.points.last.or(panic(m"a store has a point"))
 
   val longest: List[Text] =
-    store.documents.map { document => (store.dossier(document).content(last).let(_.size).or(0), document) }
+    store.documents.map: document =>
+      (store.dossier(document).content(last).let(_.size).or(0), document)
+
     . stdlib.sortBy(-_(0)).take(count).map(_(1)).pipe(List.from(_))
 
   longest.each: document =>
@@ -83,9 +84,9 @@ def timingCheckin(root: String, count: Int): Unit =
         val changed = dossier.checkin(point, edited)
         val ok = changed.content(point) == edited
 
-        say:
-          document.s+" at "+store.name(point).s+" ("+lines.size.toString+" lines): unchanged "+first+
-            " (same records: "+unchanged.toString+"), one line changed "+since(again)+" (ok: "+ok.toString+")"
+        val where = document.s+" at "+store.name(point).s+" ("+lines.size.toString+" lines)"
+        val outcome = " (same records: "+unchanged.toString+"), one line changed "+since(again)
+        say(where+": unchanged "+first+outcome+" (ok: "+ok.toString+")")
 
 // Does what `check`, `export` at every point and `status` at every point do, on a store on disk,
 // and times each: `java -cp <test jar> orthant.timingCommands <store's home> <directory>`.
@@ -106,9 +107,9 @@ def timingCommands(root: String, target: String): Unit =
     val again = now
     val sum = Survey.sum(store, point)
 
-    say:
-      store.name(point).s+": exported "+count.toString+" in "+exported+"; "+sum.pending.toString+
-        " pending, "+sum.stale.toString+" stale, "+sum.faults.toString+" faults in "+since(again)
+    val exports = store.name(point).s+": exported "+count.toString+" in "+exported+"; "
+    val faults = sum.stale.toString+" stale, "+sum.faults.toString+" faults in "+since(again)
+    say(exports+sum.pending.toString+" pending, "+faults)
 
   say("total "+since(start))
 
@@ -118,7 +119,10 @@ def timingCommands(root: String, target: String): Unit =
 def catDocument(root: String, document: String, name: String): Unit =
   import strategies.throwUnsafely
   val store = Store.inspect(Disk.path(root.tt))
-  val point = store.points.filter { point => store.name(point) == name.tt }.head.or(panic(m"no such point"))
+
+  val point =
+    store.points.filter { point => store.name(point) == name.tt }.head.or(panic(m"no such point"))
+
   val lines = store.dossier(document.tt).content(point).or(Nil)
   java.lang.System.out.nn.print(Store.text(lines).s)
 
@@ -129,10 +133,14 @@ def catDocument(root: String, document: String, name: String): Unit =
 def checkinFiles(root: String, name: String, directory: String, documents: String*): Unit =
   import strategies.throwUnsafely
   val loaded = Workspace.load(root.tt)
-  val point = loaded.space.points.filter { point => loaded.name(point) == name.tt }.head.or(panic(m"no such point"))
+
+  val point =
+    loaded.space.points.filter { point => loaded.name(point) == name.tt }.head
+    . or(panic(m"no such point"))
 
   documents.foldLeft(loaded): (store, document) =>
-    val text = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(directory, document)), "UTF-8")
+    val bytes = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(directory, document))
+    val text = new String(bytes, "UTF-8")
     val lines = Store.lines(text.tt)
     val dossier = store.dossier(document.tt).checkin(point, lines)
     java.lang.System.out.nn.println("checked in "+document)
@@ -144,12 +152,15 @@ def checkinFiles(root: String, name: String, directory: String, documents: Strin
 def workAt(root: String, name: String): Unit =
   import strategies.throwUnsafely
   val store = Workspace.load(root.tt)
-  val point = store.space.points.filter { point => store.name(point) == name.tt }.head.or(panic(m"no such point"))
+
+  val point =
+    store.space.points.filter { point => store.name(point) == name.tt }.head
+    . or(panic(m"no such point"))
 
   store.documents.each: document =>
     val work = Survey.work(store, document, point)
-    if work.wanting then java.lang.System.out.nn.println:
-      document.s+"\t"+work.pending.size.toString+"\t"+work.stale.size.toString+"\t"+work.faults.toString
+    val counts = work.pending.size.toString+"\t"+work.stale.size.toString+"\t"+work.faults.toString
+    if work.wanting then java.lang.System.out.nn.println(document.s+"\t"+counts)
 
 // Times reading a repository's references and asking, of every pair of tags, whether one is an
 // ancestor of the other: `java -cp <test jar> orthant.timingSync <repository>`.
@@ -161,11 +172,13 @@ def timingSync(root: String): Unit =
   Sync.reading(root.tt): refs =>
     val read = java.lang.System.nanoTime
     val hashes = refs.tags.map(_(1))
-    var count = 0
-    hashes.each { upper => hashes.each { lower => if refs.ancestor(upper, lower) then count += 1 } }
+
+    val count = hashes.fold(0): (count, upper) =>
+      count + hashes.filter(refs.ancestor(upper, _)).size
+
     val asked = java.lang.System.nanoTime
 
     java.lang.System.out.nn.println
-      ( s"${refs.tags.size} tags, ${refs.branches.size} branches; read in "+
-        s"${(read - start)/1000000} ms; ${hashes.size*hashes.size} questions, $count yes, in "+
+      ( s"${refs.tags.size} tags, ${refs.branches.size} branches; read in " +
+        s"${(read - start)/1000000} ms; ${hashes.size*hashes.size} questions, $count yes, in " +
         s"${(asked - read)/1000000} ms" )

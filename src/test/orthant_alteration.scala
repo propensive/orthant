@@ -32,29 +32,34 @@ def alterations(from: Int, to: Int): Unit =
   import Trials.*
 
   def placed(placement: Placement): String =
-    placement.start.toString+"-"+placement.end.toString+placement.fresh.toString+
+    placement.start.toString + "-" + placement.end.toString + placement.fresh.toString +
       placement.lines.join(t"|").s
 
   def read(dossier: Dossier, point: Point, former: List[Text], view: List[Text]): String =
     try
       val request = Indirect.alterationRead(dossier, point, former, view)
-      request.checked.map(placed).stdlib.mkString(";")+"#"+request.lines.join(t"|").s+"#"+
-        request.spans.map((from, to) => from.toString+"-"+to.toString).stdlib.mkString(";")
+      val spans = request.spans.map: (from, to) => from.toString+"-"+to.toString
+
+      request.checked.map(placed).stdlib.mkString(";") + "#" + request.lines.join(t"|").s + "#" +
+        spans.stdlib.mkString(";")
     catch case error: Indirect.Error => "error "+error.line.toString+error.reason.toString
 
   def digest(dossier: Dossier): Int =
-    points.filter(point => safely(dossier.translation(point)).or(false)).map: point =>
+    points.filter { point => safely(dossier.translation(point)).or(false) }.map: point =>
       List(t"v1", t"v2", t"v3", t"v2x").map: version =>
         val former: List[Text] = safely:
-          space.storageParent(point).let: parent =>
-            dossier.content(parent.move(release, version))
+          space.storageParent(point).let: parent => dossier.content(parent.move(release, version))
+
         . or(Nil)
 
         safely(Indirect.alterationView(dossier, point, former)).let: view =>
-          val bare = view.filter(line => !line.s.startsWith("!"))
-          val prompt = view.filter(line => !line.s.startsWith("?"))
-          (view.join(t"\n").s+"@"+read(dossier, point, former, view)+"@"+
-            read(dossier, point, former, bare)+"@"+read(dossier, point, former, prompt)).hashCode
+          val bare = view.filter: line => !line.s.startsWith("!")
+          val prompt = view.filter: line => !line.s.startsWith("?")
+
+          val shown = view.join(t"\n").s + "@" + read(dossier, point, former, view)
+          val unchecked = read(dossier, point, former, bare)
+          (shown + "@" + unchecked + "@" + read(dossier, point, former, prompt)).hashCode
+
         . or(0)
 
       . stdlib.hashCode
