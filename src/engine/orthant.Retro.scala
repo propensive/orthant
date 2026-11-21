@@ -18,6 +18,8 @@
                                                                                                   */
 package orthant
 
+import scala.annotation.tailrec
+
 import proscenium.{List, Nil}
 import soundness.*
 import soundness.dysasymptotics.linearSize
@@ -67,26 +69,31 @@ object Retro:
       // In order of position, an insertion before a replacement where it begins; which is the
       // order in which making them from the end backwards leaves them. Where two overlap, they
       // are made so, one after another.
-      val ordered = placed.order { (start, hunk) => hunk.rank(start) }
+      val ordered = placed.order: (start, hunk) => hunk.rank(start)
       val content = Content(target)
       val buffer = scala.collection.mutable.ListBuffer[Text]()
-      var position = 0
-      var rank = -1
-      var apart = true
 
-      ordered.each: (start, hunk) =>
-        if start < position || start > content.size || hunk.rank(start) == rank then apart = false
-        else if apart then
-          buffer ++= content.slice(position, start).stdlib
-          buffer ++= hunk.lines.stdlib
-          position = start + hunk.replaced.size
-          rank = hunk.rank(start)
+      // Whether the changes, from the first, lie apart, so that each is made between the lines
+      // left of the content; each is added to `buffer` as it is found to be so.
+      @tailrec
+      def assemble(todo: scala.List[(Int, Hunk)], position: Int, rank: Int): Boolean =
+        if todo.isEmpty then
+          buffer ++= content.slice(position, content.size).stdlib
+          true
+        else
+          val (start, hunk) = todo.head
 
-      if apart then
-        buffer ++= content.slice(position, content.size).stdlib
-        List.from(buffer)
+          if start < position || start > content.size || hunk.rank(start) == rank then false
+          else
+            buffer ++= content.slice(position, start).stdlib
+            buffer ++= hunk.lines.stdlib
+            assemble(todo.tail, start + hunk.replaced.size, hunk.rank(start))
+
+      if assemble(ordered.stdlib, 0, -1) then List.from(buffer)
       else
-        placed.order { (start, hunk) => -hunk.rank(start) }.fold(target): (content, pair) =>
+        val backwards = placed.order: (start, hunk) => -hunk.rank(start)
+
+        backwards.fold(target): (content, pair) =>
           val (start, hunk) = pair
 
           content.excerpt(0, start) + hunk.lines +
@@ -140,25 +147,23 @@ object Retro:
         // has the lines it changes, as every value between does. All the changes still climbing
         // are carried onto each value at once, each as if alone.
         val sources: scala.Array[Point] = all.map(_ => point)
-        var climbing: scala.List[Int] = all.indices.filter(!all(_)(1).insertion).toList
+        val climbing: scala.List[Int] = all.indices.filter(!all(_)(1).insertion).toList
 
-        lineage.excerpt(1, lineage.size).each: next =>
-          if !climbing.isEmpty then
-            dossier.content(next).let(Content(_)).let: content =>
-              val outcomes = Rebase.alone(List.from(climbing.map(all(_))), before, content)
+        lineage.excerpt(1, lineage.size).fold(climbing): (climbing, next) =>
+          if climbing.isEmpty then climbing else
+            dossier.content(next).lay(scala.Nil): lines =>
+              val outcomes = Rebase.alone(List.from(climbing.map(all(_))), before, Content(lines))
 
-              climbing = climbing.zip(outcomes.stdlib).collect:
+              climbing.zip(outcomes.stdlib).collect:
                 case (index, Rebase.Outcome.Fresh(_, _)) => sources(index) = next; index
 
-            . or { climbing = scala.Nil }
+        val sent = scala.collection.mutable.HashMap[Point, List[(Int, Hunk)]]()
 
-        val sent = scala.collection.mutable.HashMap[Point, scala.collection.mutable.ListBuffer[(Int, Hunk)]]()
-
-        all.indices.foreach: index =>
-          sent.getOrElseUpdate(sources(index), scala.collection.mutable.ListBuffer()) += all(index)
+        all.indices.reverse.foreach: index =>
+          sent(sources(index)) = all(index) :: sent.getOrElse(sources(index), Nil)
 
         // The furthest ancestor first, so that each check-in is seen by those below it.
         val groups = lineage.reverse.bind: target =>
-          sent.get(target).fold(Nil) { group => List((target, List.from(group))) }
+          sent.get(target).fold(Nil): group => List((target, group))
 
         send(dossier, point, old, lines, groups)
