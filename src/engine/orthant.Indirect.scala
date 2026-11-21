@@ -18,6 +18,8 @@
                                                                                                   */
 package orthant
 
+import scala.annotation.tailrec
+
 import proscenium.{List, Nil, `::`}
 import soundness.*
 import soundness.dysasymptotics.linearSize
@@ -85,29 +87,18 @@ object Indirect:
   def render(reference: Content, placements: List[Placement], pending: Boolean): List[Text] =
     val buffer = scala.collection.mutable.ListBuffer[Text]()
 
-    def shared(from: Int, to: Int): Unit =
-      var index = from
+    def shared(from: Int, to: Int): Unit = Content.ascend(from, to): index =>
+      val line = reference(index)
+      buffer += (if line == t"" then t"" else if pending then t"? $line" else t"  $line")
 
-      while index < to do
-        val line = reference(index)
-        buffer += (if line == t"" then t"" else if pending then t"? $line" else t"  $line")
-        index += 1
-
-    var position = 0
-
-    placements.each: placement =>
+    val position = placements.fold(0): (position, placement) =>
       val own = if placement.fresh then placement.lines else placement.hunk.lines
       val former = if placement.fresh then Nil else placement.hunk.former
       shared(position, placement.start)
-      former.each { line => buffer += mark(t"!", line) }
-      var index = placement.start
-
-      while index < placement.end do
-        buffer += mark(t"-", reference(index))
-        index += 1
-
-      own.each { line => buffer += mark(t"+", line) }
-      position = placement.end
+      former.each: line => buffer += mark(t"!", line)
+      Content.ascend(placement.start, placement.end): line => buffer += mark(t"-", reference(line))
+      own.each: line => buffer += mark(t"+", line)
+      placement.end
 
     shared(position, reference.size)
     List.from(buffer.toList)
@@ -138,6 +129,11 @@ object Indirect:
 
     . apply(0)
 
+  // How far a view has been read: the passage which is open, how many lines of the reference
+  // have been met, the phase of the last line, and the number of the next.
+  private case class Reading
+    ( current: Optional[Passage] = Unset, position: Int = 0, last: Int = 0, number: Int = 1 )
+
   // The shared lines and the passages of a view, in order.
   def parse(view: List[Text]): List[Shared | Passage] raises Error =
     def phase(sigil: Text): Int = sigil match
@@ -158,39 +154,37 @@ object Indirect:
         shared
 
     val done = scala.collection.mutable.ListBuffer[Shared | Passage]()
-    var current: Optional[Passage] = Unset
-    var position = 0
-    var last = 0
-    var number = 1
 
-    promote(view).each: line =>
+    val read = promote(view).fold(Reading()): (reading, line) =>
       val sigil = line.keep(1)
       val valid = line.length < 2 || line.keep(2).skip(1) == t" "
       val known = sigil == t"" || sigil == t" " || sigil == t"?" || phase(sigil) > 0
-      if !valid || !known || line == t" " then abort(Error(number, Reason.Sigil))
+      if !valid || !known || line == t" " then abort(Error(reading.number, Reason.Sigil))
       val text = line.skip(2)
       val next = phase(sigil)
+      val position = reading.position
 
       // A passage goes on while its lines come in the order `!`, `-`, `+`.
-      val open: Optional[Passage] = if last > 0 && next >= last then current else Unset
+      val open: Optional[Passage] =
+        if reading.last > 0 && next >= reading.last then reading.current else Unset
 
-      if open.absent || next == 0 then
-        current.let { passage => done += close(passage) }
-        current = Unset
+      if open.absent || next == 0 then reading.current.let: passage => done += close(passage)
 
-      val passage = open.or(Passage(position, position, Nil, Nil, Nil, number))
+      val passage = open.or(Passage(position, position, Nil, Nil, Nil, reading.number))
 
-      next match
-        case 1 => current = passage.copy(former = text :: passage.former)
-        case 2 => current = passage.copy(end = position + 1, replaced = text :: passage.replaced)
-        case 3 => current = passage.copy(lines = text :: passage.lines)
-        case _ => done += Shared(text)
+      val current: Optional[Passage] = next match
+        case 1 => passage.copy(former = text :: passage.former)
+        case 2 => passage.copy(end = position + 1, replaced = text :: passage.replaced)
+        case 3 => passage.copy(lines = text :: passage.lines)
 
-      if next == 0 || next == 2 then position += 1
-      last = next
-      number += 1
+        case _ =>
+          done += Shared(text)
+          Unset
 
-    current.let { passage => done += close(passage) }
+      val advance = next == 0 || next == 2
+      Reading(current, if advance then position + 1 else position, next, reading.number + 1)
+
+    read.current.let: passage => done += close(passage)
     List.from(done.toList)
 
   // What a check-in of an edited view asks for: the stale hunks whose `!` lines were deleted,
@@ -227,7 +221,8 @@ object Indirect:
       shown.get((placement.start, placement.end, placement.hunk.former)).getOrElse(Unset)
 
     // The stale hunks which each passage shows, as it was.
-    val showing = scala.collection.mutable.HashMap[Passage, scala.collection.mutable.ListBuffer[Placement]]()
+    type Showing = scala.collection.mutable.ListBuffer[Placement]
+    val showing = scala.collection.mutable.HashMap[Passage, Showing]()
 
     stale.each: placement =>
       kept(placement).let: passage =>
@@ -277,7 +272,7 @@ object Indirect:
   // reference was, at an earlier value of some axis. Where the change touches nothing, the
   // view is the point's own content, as shared lines. Where it does, a passage shows the lines
   // the reference had, as `!` lines, the lines it has now, as `-` lines, and the point's
-    // content there, as `+` lines. A stale hunk is shown likewise, whatever made it stale. Lines of
+  // content there, as `+` lines. A stale hunk is shown likewise, whatever made it stale. Lines of
   // a translation's reference which the change brought, and which nothing yet translates, are
   // shown as `?` lines, as they are beside the reference.
 
@@ -301,14 +296,7 @@ object Indirect:
 
       // The least index of a sorted array whose value is at least `bound`.
       def least(values: scala.Array[Int], bound: Int): Int =
-        var low = 0
-        var high = values.length
-
-        while low < high do
-          val middle = (low + high) >>> 1
-          if values(middle) < bound then low = middle + 1 else high = middle
-
-        low
+        Content.search(values.length)(values(_) >= bound)
 
       def meet(last: (Int, Int), next: (Int, Int)): Boolean =
         next(0) < last(1) || (next(0) == last(1) && (next(0) == next(1) || last(0) == last(1)))
@@ -327,7 +315,9 @@ object Indirect:
       // The hunks of a rendition do not overlap, so the only hunk which can carry a hull beyond
       // one of its ends is the one which spans that end, if any: the last which is not empty
       // and begins before it.
-      val solid: scala.Array[Placement] = placements.filter { placement => placement.start < placement.end }
+      val solid: scala.Array[Placement] =
+        placements.filter: placement => placement.start < placement.end
+
       val solidStarts: scala.Array[Int] = solid.map(_.start)
 
       def spanning(boundary: Int): Optional[Placement] =
@@ -341,22 +331,17 @@ object Indirect:
 
       // A hull grows to take in every hunk it touches, and hulls which meet are one.
       def pass(hulls: List[(Int, Int)]): List[(Int, Int)] =
-        var done: scala.List[(Int, Int)] = scala.Nil
-
-        hulls.each: seed =>
-          var hull = grow(seed)
-          var joining = true
-
-          while joining && !done.isEmpty do
+        // The grown hull, joined with each of the latest hulls `done` which it meets.
+        @tailrec
+        def join(hull: (Int, Int), done: scala.List[(Int, Int)]): scala.List[(Int, Int)] =
+          if done.isEmpty then hull :: done else
             val last = done.head
             val (first, second) = if last(0) <= hull(0) then (last, hull) else (hull, last)
 
-            if meet(first, second) then
-              hull = grow((first(0).min(second(0)), first(1).max(second(1))))
-              done = done.tail
-            else joining = false
+            if !meet(first, second) then hull :: done
+            else join(grow((first(0).min(second(0)), first(1).max(second(1)))), done.tail)
 
-          done = hull :: done
+        val done = hulls.fold(scala.List[(Int, Int)]()): (done, seed) => join(grow(seed), done)
 
         merge(List.from(done.reverse).order(_(0)), Nil)
 
@@ -378,10 +363,13 @@ object Indirect:
         else if from < to && reference(to - 1) == t"" then trim(from, to - 1)
         else (from, to)
 
+      val staleSpans = placements.filter(!_.fresh).map: placement =>
+        (placement.start, placement.end)
+
       val seeds =
         List.from(changed.map { region => trim(region.from2, region.to2) }.iterator)
         . filter { (from, to) => from < to && !settled(from, to) } +
-          List.from(placements.filter(!_.fresh).map { placement => (placement.start, placement.end) }.iterator)
+          List.from(staleSpans.iterator)
 
       val hulls: scala.Array[(Int, Int)] = settle(merge(seeds.order(_(0)), Nil)).stdlib.toArray
       val hullFroms: scala.Array[Int] = hulls.map(_(0))
@@ -389,14 +377,13 @@ object Indirect:
 
       // The first hull a hunk touches: none before the first which reaches its start can.
       def hullIndex(placement: Placement): Int =
-        var index = least(hullTos, placement.start)
-        var found = -1
+        @tailrec
+        def recur(index: Int): Int =
+          if index >= hulls.length || hulls(index)(0) > placement.end then -1
+          else if touches(hulls(index), placement) then index
+          else recur(index + 1)
 
-        while found < 0 && index < hulls.length && hulls(index)(0) <= placement.end do
-          if touches(hulls(index), placement) then found = index
-          index += 1
-
-        found
+        recur(least(hullTos, placement.start))
 
       val owners: scala.Array[Int] = placements.map(hullIndex)
 
@@ -414,21 +401,16 @@ object Indirect:
         texts += line
         owned += hull
 
-      var position = 0
+      def unheld(from: Int, to: Int): Unit = Content.ascend(from, to): line =>
+        item(line, reference(line), hullAt(line))
 
-      placements.indices.foreach: index =>
+      val end = placements.indices.foldLeft(0): (position, index) =>
         val placement = placements(index)
-
-        while position < placement.start do
-          item(position, reference(position), hullAt(position))
-          position += 1
-
+        unheld(position, placement.start)
         placement.lines.each(item(placement.start, _, owners(index)))
-        position = placement.end
+        placement.end
 
-      while position < reference.size do
-        item(position, reference(position), hullAt(position))
-        position += 1
+      unheld(end, reference.size)
 
       val shown: scala.Array[scala.collection.mutable.ListBuffer[Text]] =
         scala.Array.fill(hulls.length)(scala.collection.mutable.ListBuffer[Text]())
@@ -445,7 +427,9 @@ object Indirect:
 
       placements.indices.foreach: index =>
         val placement = placements(index)
-        if !placement.fresh && owners(index) >= 0 then staleOf(owners(index)) ++= placement.hunk.former.stdlib
+
+        if !placement.fresh && owners(index) >= 0
+        then staleOf(owners(index)) ++= placement.hunk.former.stdlib
 
       val regionTos: scala.Array[Int] = regions.map(_.to2)
       val changedTos: scala.Array[Int] = changed.map(_.to2)
@@ -454,53 +438,57 @@ object Indirect:
       // Where a boundary of the reference was in the former reference.
       def back(boundary: Int): List[Int] =
         val found = scala.collection.mutable.ListBuffer[Int]()
-        var index = least(regionTos, boundary)
 
-        while index < regions.length && regions(index).from2 <= boundary do
-          val region = regions(index)
+        @tailrec
+        def gather(index: Int): Unit =
+          if index < regions.length && regions(index).from2 <= boundary then
+            val region = regions(index)
 
-          if !region.changed then found += region.from + boundary - region.from2
-          else if region.from2 < boundary && boundary < region.to2
-          then { found += region.from; found += region.to }
-          else
-            if boundary == region.from2 then found += region.from
-            if boundary == region.to2 then found += region.to
+            if !region.changed then found += region.from + boundary - region.from2
+            else if region.from2 < boundary && boundary < region.to2
+            then { found += region.from; found += region.to }
+            else
+              if boundary == region.from2 then found += region.from
+              if boundary == region.to2 then found += region.to
 
-          index += 1
+            gather(index + 1)
 
+        gather(least(regionTos, boundary))
         List.from(found)
 
       def passage(index: Int): Passage =
         val hull = hulls(index)
         val (from, to) = hull
 
-        var altered = false
-        var next = least(changedTos, from)
+        @tailrec
+        def alters(next: Int): Boolean =
+          if next >= changed.length || changed(next).from2 > to then false else
+            val region = changed(next)
 
-        while !altered && next < changed.length && changed(next).from2 <= to do
-          val region = changed(next)
+            val altering =
+              if region.from2 == region.to2 then from <= region.from2 && region.from2 <= to
+              else region.from2 < to && from < region.to2
 
-          altered =
-            if region.from2 == region.to2 then from <= region.from2 && region.from2 <= to
-            else region.from2 < to && from < region.to2
+            if altering then true else alters(next + 1)
 
-          next += 1
+        val altered = alters(least(changedTos, from))
 
         // Lines of a translation's reference which no hunk touches are yet to be translated.
         // A hunk which touches the hull ends no earlier than its start.
-        var touched = false
-        var candidate = (least(placementReach, from) - 1).max(0)
+        @tailrec
+        def touching(candidate: Int): Boolean =
+          if candidate >= placements.length || placements(candidate).start > to then false
+          else if touches(hull, placements(candidate)) then true
+          else touching(candidate + 1)
 
-        while !touched && candidate < placements.length && placements(candidate).start <= to do
-          touched = touches(hull, placements(candidate))
-          candidate += 1
-
+        val touched = touching((least(placementReach, from) - 1).max(0))
         val wanting = dossier.translation(point) && !touched
 
         val before: List[Text] =
-          if altered
-          then formerLines.slice(back(from).fold(formerLines.size)(_.min(_)), back(to).fold(0)(_.max(_)))
-          else List.from(staleOf(index))
+          if !altered then List.from(staleOf(index))
+          else
+            val start = back(from).fold(formerLines.size)(_.min(_))
+            formerLines.slice(start, back(to).fold(0)(_.max(_)))
 
         Passage
           ( from, to, reference.slice(from, to), List.from(shown(index)),
@@ -513,12 +501,11 @@ object Indirect:
         List.from((first until last.max(first)).map { index => Shared(texts(loose(index))) })
 
       val parts = scala.collection.mutable.ListBuffer[Shared | Passage]()
-      var at = 0
 
-      hulls.indices.foreach: index =>
+      val at = hulls.indices.foldLeft(0): (at, index) =>
         parts ++= shared(at, hulls(index)(0)).stdlib
         parts += passage(index)
-        at = hulls(index)(1)
+        hulls(index)(1)
 
       parts ++= shared(at, Unset).stdlib
       List.from(parts)
@@ -589,46 +576,55 @@ object Indirect:
     def feasible(index0: Int, number0: Int): Boolean =
       val stack = scala.collection.mutable.Stack[(Int, Int)]((index0, number0))
 
-      while !stack.isEmpty do
+      def recall(index: Int, number: Int): Optional[java.lang.Boolean] =
+        Optional(known.get(key(index, number)))
+
+      def settle(index: Int, number: Int, result: Boolean): Unit =
+        known.put(key(index, number), java.lang.Boolean.valueOf(result))
+        stack.pop()
+
+      @tailrec
+      def explore(): Unit = if !stack.isEmpty then
         val (index, number) = stack.top
 
-        if index == wanted.length then
-          known.put(key(index, number), java.lang.Boolean.valueOf(number == seen.length))
-          stack.pop()
+        if index == wanted.length
+        then settle(index, number, number == seen.length)
         else if known.containsKey(key(index, number)) then stack.pop()
         else
           val taking = matching(index, number)
-          val taken = if taking then known.get(key(index + 1, number + 1)) else null
+
+          val taken: Optional[java.lang.Boolean] =
+            if taking then recall(index + 1, number + 1) else Unset
+
           val optional = wanted(index)(2)
 
-          if taking && taken == null then stack.push((index + 1, number + 1))
-          else if taking && taken.nn.booleanValue then
-            known.put(key(index, number), java.lang.Boolean.TRUE)
-            stack.pop()
-          else if !optional then
-            known.put(key(index, number), java.lang.Boolean.FALSE)
-            stack.pop()
+          if taking && taken.absent then stack.push((index + 1, number + 1))
+          else if taking && taken.lay(false)(_.booleanValue) then settle(index, number, true)
+          else if !optional then settle(index, number, false)
           else
-            val passed = known.get(key(index + 1, number))
-            if passed == null then stack.push((index + 1, number)) else
-              known.put(key(index, number), passed)
-              stack.pop()
+            val passed = recall(index + 1, number)
 
+            if passed.absent then stack.push((index + 1, number))
+            else settle(index, number, passed.lay(false)(_.booleanValue))
+
+        explore()
+
+      explore()
       known.get(key(index0, number0)).nn.booleanValue
 
     def align: Optional[List[(Int, Int)]] =
       if !feasible(0, 0) then Unset else
         val result = scala.collection.mutable.ListBuffer[(Int, Int)]()
-        var index = 0
-        var number = 0
 
-        while index < wanted.length do
+        @tailrec
+        def recur(index: Int, number: Int): Unit = if index < wanted.length then
           if matching(index, number) && feasible(index + 1, number + 1) then
             result += ((wanted(index)(1), seen(number)(1)))
-            number += 1
+            recur(index + 1, number + 1)
+          else
+            recur(index + 1, number)
 
-          index += 1
-
+        recur(0, 0)
         List.from(result)
 
     val pairs: List[(Int, Int)] = align.or:
@@ -662,11 +658,12 @@ object Indirect:
     def unanchored(shown: List[Passage], edited: List[Passage]): List[(Int, Int)] =
       val remaining: scala.Array[Passage] = edited.stdlib.toArray
       val spans = scala.collection.mutable.ListBuffer[(Int, Int)]()
-      var next = 0
 
-      shown.each: passage =>
-        if next < remaining.length && remaining(next).former == passage.former then next += 1
-        else spans += ((passage.start, passage.end))
+      val next = shown.fold(0): (next, passage) =>
+        if next < remaining.length && remaining(next).former == passage.former then next + 1
+        else
+          spans += ((passage.start, passage.end))
+          next
 
       if next < remaining.length then abort(Error(remaining(next).line, Reason.Former))
       List.from(spans)
@@ -684,15 +681,7 @@ object Indirect:
     val starts: scala.Array[Int] = ordered.map(_(0))
     val reach: scala.Array[Int] = ordered.map(_(1)).scanLeft(Int.MinValue)(_.max(_))
 
-    def upto(bound: Int): Int =
-      var low = 0
-      var high = starts.length
-
-      while low < high do
-        val middle = (low + high) >>> 1
-        if starts(middle) <= bound then low = middle + 1 else high = middle
-
-      low
+    def upto(bound: Int): Int = Content.search(starts.length)(starts(_) > bound)
 
     val within = stale.filter: placement => reach(upto(placement.start)) >= placement.end
 
