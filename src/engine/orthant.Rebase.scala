@@ -61,8 +61,8 @@ object Rebase:
   def apply(placed: List[(Int, Hunk)], old: List[Text], next: List[Text]): List[Outcome] =
     apply(placed, Content(old), Content(next))
 
-  // The hunks, each at the position its replaced lines begin in `old`, carried onto `next`.
-  def apply(placed: List[(Int, Hunk)], old: Content, next: Content): List[Outcome] =
+  // The regions by which `old` becomes `next`, found once, and how a hunk of `old` fares on them.
+  private final class Carrier(old: Content, next: Content):
     val regions: scala.Array[Region] = Region.between(old.lines, next.lines).stdlib.toArray
     val same: scala.Array[Region] = regions.filter(!_.changed)
 
@@ -187,6 +187,22 @@ object Rebase:
 
         if former.nil || former == replaced then Outcome.Fresh(from2, Hunk(replaced, lines))
         else Outcome.Stale(from2, to2, Hunk(replaced, lines, former = former))
+
+    // The outcome of each hunk as if it were carried alone.
+    def alone(start: Int, hunk: Hunk): Outcome = classify(start, hunk) match
+      case outcome: Outcome => outcome
+      case hull: Hull       => merge(List(hull)).head.or(Outcome.Orphan(hunk))
+
+  // Each hunk carried onto `next` by itself, as `apply` would carry it were it the only one,
+  // with the regions between the two found only once.
+  def alone(placed: List[(Int, Hunk)], old: Content, next: Content): List[Outcome] =
+    val carrier = Carrier(old, next)
+    placed.map(carrier.alone(_, _))
+
+  // The hunks, each at the position its replaced lines begin in `old`, carried onto `next`.
+  def apply(placed: List[(Int, Hunk)], old: Content, next: Content): List[Outcome] =
+    val carrier = Carrier(old, next)
+    import carrier.{classify, merge}
 
     val outcomes = placed.map: (start, hunk) => classify(start, hunk)
     val hulls = outcomes.sweep { case hull: Hull => hull }

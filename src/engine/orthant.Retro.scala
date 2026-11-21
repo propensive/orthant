@@ -32,6 +32,9 @@ import soundness.sortingAlgorithms.timsort
 object Retro:
   // The changes by which `old` becomes `lines`, each a hunk where it begins in `old`.
   def changes(old: List[Text], lines: List[Text]): List[(Int, Hunk)] =
+    val before = Content(old)
+    val after = Content(lines)
+
     Region.between(old, lines).filter(_.changed).bind: region =>
       val size = region.to - region.from
 
@@ -43,12 +46,12 @@ object Retro:
         if size != region.to2 - region.from2 then whole
         else
           List.range(0, size).map: index => (region.from + index, region.from2 + index)
-          . filter: (line, line2) => old.excerpt(line, line + 1) != lines.excerpt(line2, line2 + 1)
+          . filter: (line, line2) => before(line) != after(line2)
           . map: (line, line2) => (line, line + 1, line2, line2 + 1)
 
       runs.map: (from, to, from2, to2) =>
-        val hunk = Hunk(old.excerpt(from, to), lines.excerpt(from2, to2))
-        (from, Inscription.anchor(hunk, from, old))
+        val hunk = Hunk(before.slice(from, to), after.slice(from2, to2))
+        (from, Inscription.anchor(hunk, from, before))
 
   // The content `target` with the changes made to `old` carried onto it, or `Unset` if one of
   // them does not find the lines it was made to.
@@ -61,12 +64,33 @@ object Retro:
       case Rebase.Outcome.Fresh(start, hunk) => (start, hunk)
 
     if placed.size != outcomes.size then Unset else
-      // From the end backwards, so that no change moves the lines of one yet to be made.
-      placed.order { (start, hunk) => -hunk.rank(start) }.fold(target): (content, pair) =>
-        val (start, hunk) = pair
+      // In order of position, an insertion before a replacement where it begins; which is the
+      // order in which making them from the end backwards leaves them. Where two overlap, they
+      // are made so, one after another.
+      val ordered = placed.order { (start, hunk) => hunk.rank(start) }
+      val content = Content(target)
+      val buffer = scala.collection.mutable.ListBuffer[Text]()
+      var position = 0
+      var rank = -1
+      var apart = true
 
-        content.excerpt(0, start) + hunk.lines +
-          content.excerpt(start + hunk.replaced.size, content.size)
+      ordered.each: (start, hunk) =>
+        if start < position || start > content.size || hunk.rank(start) == rank then apart = false
+        else if apart then
+          buffer ++= content.slice(position, start).stdlib
+          buffer ++= hunk.lines.stdlib
+          position = start + hunk.replaced.size
+          rank = hunk.rank(start)
+
+      if apart then
+        buffer ++= content.slice(position, content.size).stdlib
+        List.from(buffer)
+      else
+        placed.order { (start, hunk) => -hunk.rank(start) }.fold(target): (content, pair) =>
+          val (start, hunk) = pair
+
+          content.excerpt(0, start) + hunk.lines +
+            content.excerpt(start + hunk.replaced.size, content.size)
 
   // The dossier after the changes are checked in, each group at its point, the first group
   // first; `lines` is what the content at `point` must then be.
@@ -109,20 +133,32 @@ object Retro:
     dossier.content(point).lay(dossier.checkin(point, lines)): old =>
       lines.lay(dossier.checkin(point, Unset)): lines =>
         val lineage = axis.lineage(point(axis)).map(point.move(axis, _))
+        val before = Content(old)
+        val all: scala.Array[(Int, Hunk)] = changes(old, lines).stdlib.toArray
 
-        def source(change: (Int, Hunk)): Point =
-          if change(1).insertion then point else
-            def climb(todo: List[Point], reached: Point): Point = todo.head.lay(reached): next =>
-              val carried = dossier.content(next).let(carry(List(change), old, _))
-              if carried.absent then reached else climb(todo.excerpt(1, todo.size), next)
+        // How far up the lineage each change is carried whole: it climbs while the next value
+        // has the lines it changes, as every value between does. All the changes still climbing
+        // are carried onto each value at once, each as if alone.
+        val sources: scala.Array[Point] = all.map(_ => point)
+        var climbing: scala.List[Int] = all.indices.filter(!all(_)(1).insertion).toList
 
-            climb(lineage.excerpt(1, lineage.size), point)
+        lineage.excerpt(1, lineage.size).each: next =>
+          if !climbing.isEmpty then
+            dossier.content(next).let(Content(_)).let: content =>
+              val outcomes = Rebase.alone(List.from(climbing.map(all(_))), before, content)
 
-        val sent = changes(old, lines).map: change => (source(change), change)
+              climbing = climbing.zip(outcomes.stdlib).collect:
+                case (index, Rebase.Outcome.Fresh(_, _)) => sources(index) = next; index
+
+            . or { climbing = scala.Nil }
+
+        val sent = scala.collection.mutable.HashMap[Point, scala.collection.mutable.ListBuffer[(Int, Hunk)]]()
+
+        all.indices.foreach: index =>
+          sent.getOrElseUpdate(sources(index), scala.collection.mutable.ListBuffer()) += all(index)
 
         // The furthest ancestor first, so that each check-in is seen by those below it.
         val groups = lineage.reverse.bind: target =>
-          val group = sent.filter(_(0) == target).map(_(1))
-          if group.nil then Nil else List((target, group))
+          sent.get(target).fold(Nil) { group => List((target, List.from(group))) }
 
         send(dossier, point, old, lines, groups)
