@@ -121,3 +121,32 @@ def catDocument(root: String, document: String, name: String): Unit =
   val point = store.points.filter { point => store.name(point) == name.tt }.head.or(panic(m"no such point"))
   val lines = store.dossier(document.tt).content(point).or(Nil)
   java.lang.System.out.nn.print(Store.text(lines).s)
+
+// Checks documents in at the point whose directory is named, each from a file of its content:
+// `java -cp <test jar> orthant.checkinFiles <store's home> <point> <directory> <document>…`,
+// where the content of each document is the file of its name in the directory.
+@main
+def checkinFiles(root: String, name: String, directory: String, documents: String*): Unit =
+  import strategies.throwUnsafely
+  val loaded = Workspace.load(root.tt)
+  val point = loaded.space.points.filter { point => loaded.name(point) == name.tt }.head.or(panic(m"no such point"))
+
+  documents.foldLeft(loaded): (store, document) =>
+    val text = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(directory, document)), "UTF-8")
+    val lines = Store.lines(text.tt)
+    val dossier = store.dossier(document.tt).checkin(point, lines)
+    java.lang.System.out.nn.println("checked in "+document)
+    store.save(document.tt, dossier)
+
+// Prints the pending lines and the stale passages of each document at the point whose directory
+// is named: `java -cp <test jar> orthant.workAt <store's home> <point>`.
+@main
+def workAt(root: String, name: String): Unit =
+  import strategies.throwUnsafely
+  val store = Workspace.load(root.tt)
+  val point = store.space.points.filter { point => store.name(point) == name.tt }.head.or(panic(m"no such point"))
+
+  store.documents.each: document =>
+    val work = Survey.work(store, document, point)
+    if work.wanting then java.lang.System.out.nn.println:
+      document.s+"\t"+work.pending.size.toString+"\t"+work.stale.size.toString+"\t"+work.faults.toString
