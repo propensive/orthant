@@ -30,6 +30,17 @@ object Content:
   // The boxed form of `Absent`, which a lookup in a Java map gives for a key it lacks.
   private val Missing: Integer = Integer.valueOf(Absent).nn
 
+  // The least index below `size` for which `test` holds, where it holds for every index after
+  // the first for which it does; `size` if it holds for none.
+  def search(size: Int)(test: Int => Boolean): Int =
+    @tailrec
+    def recur(low: Int, high: Int): Int =
+      if low >= high then low else
+        val middle = (low + high)/2
+        if test(middle) then recur(low, middle) else recur(middle + 1, high)
+
+    recur(0, size)
+
   // Performs `action` on each index from `from` up to, not including, `to`.
   @tailrec
   private def ascend(from: Int, to: Int)(action: Int => Unit): Unit =

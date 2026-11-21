@@ -18,6 +18,8 @@
                                                                                                   */
 package orthant
 
+import scala.annotation.tailrec
+
 import proscenium.{List, Nil, `::`}
 import soundness.*
 import soundness.dysasymptotics.linearSize
@@ -67,23 +69,17 @@ object Rebase:
     val same: scala.Array[Region] = regions.filter(!_.changed)
 
     // How many of the regions before each are not pure deletions.
-    val impure: scala.Array[Int] = regions.scanLeft(0) { (sum, region) => sum + (if region.pure then 0 else 1) }
+    val impure: scala.Array[Int] = regions.scanLeft(0): (sum, region) =>
+      sum + (if region.pure then 0 else 1)
 
     // The index of the first of `among` for which `test` holds, where it holds for every one
     // after the first for which it does; the size of `among` if it holds for none.
     def first(among: scala.Array[Region])(test: Region => Boolean): Int =
-      var low = 0
-      var high = among.length
-
-      while low < high do
-        val middle = (low + high)/2
-        if test(among(middle)) then high = middle else low = middle + 1
-
-      low
+      Content.search(among.length): index => test(among(index))
 
     // The first unchanged region which reaches `to` or beyond, if it satisfies `test`.
     def reaching(to: Int, strict: Boolean)(test: Region => Boolean): Optional[Region] =
-      val index = first(same) { region => if strict then region.to > to else region.to >= to }
+      val index = first(same): region => if strict then region.to > to else region.to >= to
       if index < same.length && test(same(index)) then same(index) else Unset
 
     def carry(position: Int, region: Region): Int = region.from2 + position - region.from
@@ -128,48 +124,50 @@ object Rebase:
             else Hull(start, end, carry(start, region), carry(end, region), start, hunk)
 
           . or:
-              // Every region which overlaps the replaced lines, and every empty one within them.
-              val low = first(regions): region =>
-                region.to > start && (region.from < region.to || region.from > start)
+            // Every region which overlaps the replaced lines, and every empty one within them.
+            val low = first(regions): region =>
+              region.to > start && (region.from < region.to || region.from > start)
 
-              val high = first(regions): region =>
-                region.from >= end
+            val high = first(regions)(_.from >= end)
 
-              if high <= low || impure(high) - impure(low) == 0 then Outcome.Orphan(hunk)
-              else stale(low, high)
+            if high <= low || impure(high) - impure(low) == 0 then Outcome.Orphan(hunk)
+            else stale(low, high)
 
     def merge(hulls: List[Hull]): List[Outcome] =
       def own(from: Int, todo: List[Hull], to: Int): List[Text] =
         val buffer = scala.collection.mutable.ListBuffer[Text]()
-        var position = from
 
-        todo.each: hull =>
+        val position = todo.fold(from): (position, hull) =>
           buffer ++= old.slice(position, hull.start).stdlib
           buffer ++= hull.hunk.lines.stdlib
-          position = hull.start + hull.hunk.replaced.size
+          hull.start + hull.hunk.replaced.size
 
         buffer ++= old.slice(position, to).stdlib
         List.from(buffer.toList)
 
       def group(sorted: List[Hull]): List[List[Hull]] =
         val done = scala.collection.mutable.ListBuffer[List[Hull]]()
-        var current: scala.List[Hull] = scala.Nil
-        var reach = -1
-        var least = 0
 
-        sorted.each: hull =>
-          if current.isEmpty || hull.from < reach || (hull.from == least && hull.to == reach)
-          then
-            least = if current.isEmpty then hull.from else least.min(hull.from)
-            reach = reach.max(hull.to)
-            current = hull :: current
+        // The hulls of `todo` grouped onto `done`, the group so far being `current`, which spans
+        // from `least` to `reach`.
+        @tailrec
+        def recur(todo: scala.List[Hull], current: scala.List[Hull], least: Int, reach: Int)
+        :   Unit =
+
+          if todo.isEmpty then
+            if !current.isEmpty then done += List.from(current.reverse)
           else
-            done += List.from(current.reverse)
-            current = scala.List(hull)
-            least = hull.from
-            reach = hull.to
+            val hull = todo.head
 
-        if !current.isEmpty then done += List.from(current.reverse)
+            if current.isEmpty || hull.from < reach || (hull.from == least && hull.to == reach)
+            then
+              val least2 = if current.isEmpty then hull.from else least.min(hull.from)
+              recur(todo.tail, hull :: current, least2, reach.max(hull.to))
+            else
+              done += List.from(current.reverse)
+              recur(todo.tail, scala.List(hull), hull.from, hull.to)
+
+        recur(sorted.stdlib, scala.Nil, 0, -1)
         List.from(done.toList)
 
       group(hulls.order(_.from)).map: hulls =>
@@ -209,16 +207,7 @@ object Rebase:
     val byFrom2: scala.Array[Hull] = hulls.stdlib.toArray.sortBy(_.from2)
 
     // The index of the first hull, by where it begins in `next`, which begins at `from2` or after.
-    def lowest(from2: Int): Int =
-      var low = 0
-      var high = byFrom2.length
-
-      while low < high do
-        val middle = (low + high)/2
-        if byFrom2(middle).from2 >= from2 then high = middle else low = middle + 1
-
-      low
-
+    def lowest(from2: Int): Int = Content.search(byFrom2.length)(byFrom2(_).from2 >= from2)
 
     // Each outcome with the rank its hunk had in `old`; for hunks which became one, the least.
     val alone: List[(Int, Outcome)] = placed.zip(outcomes).sweep:
@@ -230,15 +219,15 @@ object Rebase:
         case Outcome.Fresh(start, hunk)   => (start, start + hunk.replaced.size)
         case Outcome.Orphan(_)            => (0, 0)
 
-      var index = lowest(span(0))
-      var rank = old.size*2 + 1
+      // The least rank of the hulls from `index` on which lie within the span.
+      @tailrec
+      def least(index: Int, rank: Int): Int =
+        if index >= byFrom2.length || byFrom2(index).from2 > span(1) then rank else
+          val hull = byFrom2(index)
+          val within = hull.to2 <= span(1)
+          least(index + 1, if within then rank.min(hull.hunk.rank(hull.start)) else rank)
 
-      while index < byFrom2.length && byFrom2(index).from2 <= span(1) do
-        val hull = byFrom2(index)
-        if hull.to2 <= span(1) then rank = rank.min(hull.hunk.rank(hull.start))
-        index += 1
-
-      (rank, outcome)
+      (least(lowest(span(0)), old.size*2 + 1), outcome)
 
     val ranked: List[(Int, Outcome)] = alone + merged
 
@@ -251,7 +240,8 @@ object Rebase:
     // Hunks which were apart, and come to insert at the same place because the lines between
     // them are gone, are one insertion there, of the lines of each in the order they were in.
     // The outcomes at each gap, the gaps in the order they are first met.
-    val gaps = scala.collection.mutable.LinkedHashMap[Int, scala.collection.mutable.ListBuffer[(Int, Outcome)]]()
+    type Found = scala.collection.mutable.ListBuffer[(Int, Outcome)]
+    val gaps = scala.collection.mutable.LinkedHashMap[Int, Found]()
 
     ranked.each: pair =>
       gap(pair(1)).let: place =>
