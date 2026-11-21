@@ -1773,6 +1773,17 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == t"↯/o.7.4")
 
+    suite(m"Growth"):
+      // Doubling the size twice multiplies a linear cost by four, and a quadratic one by
+      // sixteen; anything over eight is taken to be worse than linear.
+      test(m"Derivation, check-in and views grow linearly with the document"):
+        Growth.cost(500)
+        val small = Growth.cost(1000)
+        val large = Growth.cost(4000)
+        large.toDouble/small.toDouble
+
+      . assert(_ < 8.0)
+
     suite(m"Invariants over random check-ins"):
       List.range(1, 41).each: seed =>
         test(m"A run of random check-ins keeps every invariant (seed $seed)"):
