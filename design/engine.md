@@ -203,6 +203,11 @@ gave it.
 - **Updating**, when the store has changed beneath the working tree, writes each document again
   as the store now has it. An edit which is not checked in is carried onto it as a change is
   carried for `--since`; if any cannot be, nothing is written (`↯/o.4.12`).
+- **A hunk with no one place** (`↯/o.1.8`) is found only by deriving, so a command does not look
+  for it throughout the store before it starts: `check` does that. A command which reads a
+  document at a point refuses it if a hunk stored at that point has no place, and one which
+  changes a document refuses it if any of its hunks, at any point, has none. `status` and `todo`
+  count such a hunk among what wants doing.
 
 ## What wants doing
 

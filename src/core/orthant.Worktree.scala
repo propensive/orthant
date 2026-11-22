@@ -144,11 +144,17 @@ object Worktree:
       case Mode.Against(name, value) =>
         Indirect.alterationView(dossier, point, former(store, dossier, point, name, value))
 
-  // A document as the working tree shows it at a point, or `Unset` if it is not there.
+  // A document as the working tree shows it at a point, or `Unset` if it is not there. It is
+  // not shown if a hunk stored at the point has no one place.
   def render(store: Workspace, document: Text, point: Point, mode: Mode)
   :   Optional[List[Text]] raises Store.Error raises Axis.Error =
 
-    show(store, store.dossier(document), point, mode)
+    store.content(document, point).let: plain =>
+      show(store, store.dossier(document), point, mode)
+
+  // A document is changed only if every hunk the store has for it, at any point, has a place.
+  private def placed(store: Workspace, document: Text): Unit raises Store.Error =
+    store.unplaced(List(document)).head.let(abort(_))
 
   // What the lines of a document in the working tree ask for.
   private def request
@@ -239,6 +245,7 @@ object Worktree:
       case error: Indirect.Error => refused(store, document, point, error, error.bolt)
 
     . protect:
+        placed(store, document)
         val dossier = store.dossier(document)
         val asked = content.let(request(store, dossier, point, mode, _))
         val base = asked.lay(dossier)(Indirect.confirm(dossier, point, _))
@@ -412,6 +419,8 @@ object Worktree:
 
     val blocked = edited.filter: change => found.exists(_(0) == change.document)
     if !blocked.nil then abort(Workspace.Error(Workspace.Reason.Edited(blocked.size)))
+
+    found.each: entry => placed(store, entry(0))
 
     found.fold(store): (store, entry) =>
       val document = entry(0)

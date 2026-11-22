@@ -567,7 +567,7 @@ object OrthantTool:
   private def here(using cli: Cli): Text = cli.workingDirectory.directory()
 
   private def open()(using Cli): Workspace raises Store.Error =
-    Workspace.load(Workspace.find(here))
+    Workspace.open(Workspace.find(here))
 
   // A point as it is shown: the value on every axis.
   private def describe(store: Workspace, point: Point): Text =
@@ -684,7 +684,7 @@ object OrthantTool:
     val store = open()
     val point = store.locate(Worktree.view(store), values)
 
-    store.dossier(document(store, path)).content(point).lay(absent(path, describe(store, point))):
+    store.content(document(store, path), point).lay(absent(path, describe(store, point))):
       lines =>
         Out.print(Store.text(lines))
         Exit.Ok

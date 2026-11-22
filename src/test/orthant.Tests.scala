@@ -1032,6 +1032,22 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == List(t"↯/o.1.8"))
 
+      test(m"A hunk with no place is found where its document is read or changed, not before"):
+        val made = populated()
+        Disk.write(t"${made.data}/root/guide/intro.md", t"Something else.\n", made.staging)
+        val store = Workspace.open(made.root)
+        val root = store.space.root
+        val french = store.locate(root, List(t"fr"))
+        val plain = store.content(t"guide/intro.md", root)
+        Worktree.checkout(store, root, true)
+        edit(store, t"guide/intro.md", t"Something else again.\n")
+
+        ( plain, code(Workspace.load(made.root)), code(store.content(t"guide/intro.md", french)),
+          code(Worktree.checkout(store, french, true)),
+          code(Worktree.checkin(store, Nil, false, false)) )
+
+      . assert(_ == (List(t"Something else."), t"↯/o.1.8", t"↯/o.1.8", t"↯/o.1.8", t"↯/o.1.8"))
+
       test(m"An indirect check-out writes views, and a check-in of one stores its content"):
         val store = populated()
         val french = store.locate(store.space.root, List(t"fr", t"v2"))

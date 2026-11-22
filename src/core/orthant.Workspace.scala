@@ -170,6 +170,14 @@ object Workspace:
     faults.head.let(abort(_))
     store
 
+  // The store beneath `root`, of which every record must be readable. Nothing is derived, so a
+  // hunk which has no one place is not found here: it is found when the document it is in is
+  // read at its point, or changed, and `scan` finds them all.
+  def open(root: Text): Workspace raises Store.Error =
+    val store = Store.inspect(Disk.path(root))
+    store.omitted.head.let(abort(_))
+    Workspace(root, store)
+
 // A store on disk: the directory `root` which has `.orthant` in it, and the store as it was
 // read from there, or as it has since been made.
 case class Workspace(root: Text, held: Store)
