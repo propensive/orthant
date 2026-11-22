@@ -22,6 +22,7 @@ import proscenium.{List, Nil, Map}
 import soundness.*
 import soundness.errorDiagnostics.emptyDiagnostics
 import soundness.filesystemBackends.javaBaseFilesystem
+import soundness.probates.cancelProbate
 import soundness.systems.javaBaseSystem
 
 // A store as the tool has it: on a disk, beneath a directory, where it is changed as well as
@@ -161,8 +162,13 @@ object Workspace:
   // The store beneath `root`, and everything which is wrong with what it holds. A file which
   // cannot be read as a record is left out.
   def scan(root: Text): (Workspace, List[Store.Error]) raises Store.Error =
-    val store = Store.inspect(Disk.path(root))
-    (Workspace(root, store), store.faults)
+    val store = inspect(root)
+    (store, store.faults)
+
+  // The store beneath `root`, with whatever of its records can be read; the rest are among its
+  // `omitted`.
+  def inspect(root: Text): Workspace raises Store.Error =
+    Workspace(root, Store.inspect(Disk.path(root)))
 
   // The store beneath `root`, which must have nothing wrong with it.
   def load(root: Text): Workspace raises Store.Error =
@@ -304,6 +310,16 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
     configure:
       settings.copy(axis = settings.axis.map: entry =>
         if entry.name == axis then entry.copy(prefer = name) else entry)
+
+  // Derives every document at the points given, each document in a task of its own, so that
+  // whatever then reads them there finds them derived: no document's content depends on
+  // another's. Nothing is refused here; what is wrong with a document is found when it is read.
+  def prepare(points: List[Point])(using Monitor): Unit =
+    val tasks = documents.map: document =>
+      val held = dossier(document)
+      async(points.each { point => safely(held.rendition(point)) })
+
+    tasks.each: task => safely(task.await())
 
   // The store in which a document has the dossier given, with nothing written.
   def supposing(document: Text, dossier: Dossier): Workspace =

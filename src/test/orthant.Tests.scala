@@ -1048,6 +1048,16 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == (List(t"Something else."), t"↯/o.1.8", t"↯/o.1.8", t"↯/o.1.8", t"↯/o.1.8"))
 
+      test(m"Documents derived in tasks of their own are as they are when derived in turn"):
+        import threads.virtualThreads
+        val store = populated()
+        val ready = Workspace.inspect(store.root)
+        supervise(ready.prepare(ready.points))
+        def all(store: Workspace) = store.points.map(store.content(t"guide/intro.md", _))
+        (all(ready) == all(store), ready.faults.size, all(ready).size)
+
+      . assert(_ == (true, 0, 6))
+
       test(m"An indirect check-out writes views, and a check-in of one stores its content"):
         val store = populated()
         val french = store.locate(store.space.root, List(t"fr", t"v2"))
