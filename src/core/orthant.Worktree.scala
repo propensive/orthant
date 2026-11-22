@@ -149,8 +149,7 @@ object Worktree:
   def render(store: Workspace, document: Text, point: Point, mode: Mode)
   :   Optional[List[Text]] raises Store.Error raises Axis.Error =
 
-    store.content(document, point).let: plain =>
-      show(store, store.dossier(document), point, mode)
+    store.content(document, point).let: plain => show(store, store.dossier(document), point, mode)
 
   // A document is changed only if every hunk the store has for it, at any point, has a place.
   private def placed(store: Workspace, document: Text): Unit raises Store.Error =

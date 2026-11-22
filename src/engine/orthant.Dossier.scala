@@ -128,8 +128,11 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
     val own = fresh || axis.preference == Preference.Own
     Placement(start, end, hunk, origin, fresh, if own then hunk.lines else hunk.replaced)
 
-  private def resolve(reference: Content, candidates: List[Placement], issues: List[Issue])
-  :   Rendition raises Axis.Error =
+  // Of hunks which have places, those which are applied, in the order of their places, and the
+  // conflicts among them. Whether one is applied depends only on those it overlaps, so this may
+  // be asked of any of them which overlap none of the rest.
+  private def choose(candidates: List[Placement])
+  :   (List[Placement], List[Issue]) raises Axis.Error =
 
     val ranked: List[Placement] =
       val byStart = candidates.order(_.start)
@@ -208,6 +211,12 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
       List.from(accepted).order: placement =>
         placement.start*2 + (if placement.start == placement.end then 0 else 1)
 
+    (ordered, List.from(conflicts.reverse))
+
+  private def resolve(reference: Content, candidates: List[Placement], issues: List[Issue])
+  :   Rendition raises Axis.Error =
+
+    val (ordered, conflicts) = choose(candidates)
     val buffer = scala.collection.mutable.ListBuffer[Text]()
     val placed = scala.collection.mutable.ListBuffer[Placement]()
 
@@ -223,7 +232,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
     val placements = List.from(placed.toList)
     val stale = placements.filter(!_.fresh).map(Issue.Stale(_))
 
-    Rendition(lines, reference.lines, placements, issues + stale + List.from(conflicts.reverse))
+    Rendition(lines, reference.lines, placements, issues + stale + conflicts)
       ( reference, candidates )
 
   def store(point: Point, lines: Optional[List[Text]]): Dossier raises Axis.Error =
@@ -332,9 +341,103 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
           // the hunks do not give the lines, two of them being at one place, each is tried.
           val sound: Boolean = whole.content(point) == lines
 
+          // A tangled hunk is tried among the hunks it is tangled with, and not in the whole
+          // document: the located hunks fall into groups, each of hunks which overlap one
+          // another and no hunk of another group, and what a group shows over the lines it
+          // spans does not depend on any other.
+          val located: scala.Array[Placement] =
+            whole.rendition(point).let(_.candidates).or(Nil).stdlib.toArray
+
+          val base: Optional[Content] = whole.rendition(point).let(_.base)
+          val translated: Boolean = translation(point)
+
+          // For each located hunk, in the order of the places, the first of its group and the
+          // line at which its group ends.
+          val groups: scala.collection.immutable.Map[Hunk, (Int, Int, scala.Array[Int])] =
+            val sorted: scala.Array[Int] = located.indices.toArray.sortBy: index =>
+              located(index).start*2 + (if located(index).start == located(index).end then 0 else 1)
+
+            @tailrec
+            def gather
+              ( index:   Int,
+                members: scala.List[Int],
+                low:     Int,
+                reach:   Int,
+                done:    scala.List[(Int, Int, scala.Array[Int])] )
+            :   scala.List[(Int, Int, scala.Array[Int])] =
+
+              def closed = if members.isEmpty then done else (low, reach, members.toArray) :: done
+
+              if index == sorted.length then closed else
+                val placement = located(sorted(index))
+                val insertion = placement.start == placement.end
+
+                val joins =
+                  !members.isEmpty &&
+                    (placement.start < reach || insertion && low == reach && placement.start == low)
+
+                val next = sorted(index)
+
+                if joins
+                then gather(index + 1, next :: members, low, reach.max(placement.end), done)
+                else gather(index + 1, scala.List(next), placement.start, placement.end, closed)
+
+            val own = located.filter(_.origin == point).groupBy(_.hunk)
+
+            scala.collection.immutable.Map.from:
+              gather(0, scala.Nil, 0, 0, scala.Nil).iterator.flatMap: (low, reach, members) =>
+                members.iterator.map(located(_)).filter(_.origin == point).flatMap: placement =>
+                  if own(placement.hunk).length > 1 then scala.None
+                  else scala.Some(placement.hunk -> (low, reach, members.sorted))
+
+          // The lines which the hunks of one group give for the lines it spans, how many issues
+          // are among them, and how many of those lines are pending.
+          def shown(reference: Content, low: Int, reach: Int, members: List[Placement])
+          :   (scala.List[Text], Int, Int) =
+
+            val (applied, conflicts) = choose(members)
+            val buffer = scala.collection.mutable.ListBuffer[Text]()
+            val covered = new scala.Array[Boolean](reach - low)
+
+            val position = applied.fold(low): (position, placement) =>
+              buffer ++= reference.slice(position, placement.start).stdlib
+              buffer ++= placement.lines.stdlib
+              Content.ascend(placement.start, placement.end): line => covered(line - low) = true
+              placement.end
+
+            buffer ++= reference.slice(position, reach).stdlib
+
+            val unplaced =
+              if !translated then 0 else List.range(low, reach).count: line =>
+                reference(line) != t"" && !covered(line - low)
+
+            (buffer.toList, applied.count(!_.fresh) + conflicts.size, unplaced)
+
+          // Whether a tangled hunk may go, of the hunks which `remains` holds of, and what
+          // then becomes of the numbers of issues and of pending lines; or `Unset` if that
+          // cannot be decided from its group.
+          def locally(hunk: Hunk, remains: Hunk => Boolean, issues0: Int, pending0: Int)
+          :   Optional[(Boolean, Int, Int)] =
+
+            base.let: reference =>
+              Optional(groups.get(hunk).orNull).let: (low, reach, members) =>
+                val present = List.from:
+                  members.iterator.map(located(_)).filter: placement =>
+                    placement.origin != point || remains(placement.hunk)
+
+                val absent =
+                  present.filter: placement => placement.origin != point || placement.hunk != hunk
+
+                val (lines1, issues1, pending1) = shown(reference, low, reach, present)
+                val (lines2, issues2, pending2) = shown(reference, low, reach, absent)
+                val fewer = issues0 - issues1 + issues2
+                val unplaced = pending0 - pending1 + pending2
+                (lines1 == lines2 && fewer <= issues && unplaced <= pending, fewer, unplaced)
+
           // Dropping one may leave another with nothing to do, so this repeats until none goes.
           def prune(hunks: List[Hunk], issues0: Int, pending0: Int): List[Hunk] =
             val gone = scala.collection.mutable.HashSet[Hunk]()
+            val here = hunks.stdlib.toSet
             def left: List[Hunk] = if gone.isEmpty then hunks else hunks.filter(!gone.contains(_))
 
             val current = hunks.fold((issues0, pending0)): (current, hunk) =>
@@ -355,17 +458,31 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
                     (current(0) + more, current(1))
 
                 case Kind.Tangled =>
-                  val fewer = held(left.filter(_ != hunk))
+                  // Where its group cannot say, the document is derived without the hunk.
+                  def derived: (Boolean, Int, Int) =
+                    val fewer = held(left.filter(_ != hunk))
+                    (same(fewer), fewer.issues(point).size, fewer.pending(point).size)
 
-                  if !same(fewer) then current else
+                  val found: Optional[(Boolean, Int, Int)] =
+                    if !sound then Unset
+                    else locally(hunk, hunk => here.contains(hunk) && !gone.contains(hunk),
+                        current(0), current(1))
+
+                  val (goes, fewer, unplaced) = found.or(derived)
+
+                  if !goes then current else
                     gone += hunk
-                    (fewer.issues(point).size, fewer.pending(point).size)
+                    (fewer, unplaced)
 
             if gone.isEmpty then hunks else prune(left, current(0), current(1))
 
           val needed = prune(hunks, issues, pending)
 
-          if needed.nil && same(bare) then bare else held(needed)
+          // Whatever was decided, the hunks kept must still give the lines, with no more that
+          // wants attention; if they do not, every hunk is kept.
+          if needed.nil && same(bare) then bare else
+            val pruned = held(needed)
+            if same(pruned) then pruned else whole
 
   // What wants attention in the content at a point.
   def issues(point: Point): List[Issue] raises Axis.Error = rendition(point).let(_.issues).or(Nil)
