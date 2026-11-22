@@ -1106,7 +1106,7 @@ object Tests extends Suite(m"Orthant tests"):
         val store = populated()
         val file = t"${store.folder}/config.tel"
         val later = Store.lines(Disk.read(file).or(t"")).map: line =>
-          if line == t"format 1" then t"format 2" else line
+          if line == t"format 1" then t"format 3" else line
 
         Disk.write(file, Store.text(later), store.staging)
         code(Workspace.scan(store.root))
@@ -2128,6 +2128,16 @@ object Tests extends Suite(m"Orthant tests"):
         Workspace.scan(store.root)(1).map(_.bolt.text)
 
       . assert(_ == List(t"↯/o.7.6"))
+
+      test(m"A store with a sourced axis is of format 2, and one of format 1 may not have one"):
+        val store = fixture().store
+        val file = t"${store.folder}/config.tel"
+        val lines = Store.lines(Disk.read(file).or(t""))
+        val earlier = lines.map: line => if line == t"format 2" then t"format 1" else line
+        Disk.write(file, Store.text(earlier), store.staging)
+        (store.format, code(Workspace.open(store.root)))
+
+      . assert(_ == (2, t"↯/o.5.1"))
 
       test(m"An axis with a source must be the last"):
         val store = fixture().store

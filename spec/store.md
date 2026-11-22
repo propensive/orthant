@@ -8,7 +8,8 @@ takes one value from each axis; and every document has, at each point, a **conte
 lines — or is absent there. The store does not hold each content in full: a point's content
 cascades from the contents of the points above it, and only the lines which differ are stored.
 
-This document specifies version 1 of the store: the files which make it up, the rules by which
+This document specifies versions 1 and 2 of the store, which differ only in that an axis of a
+store of version 2 may have a **source** (§7.4): the files which make it up, the rules by which
 the content of a document at a point is derived from them, and the operations which a program
 reading a store provides. It is written so that a reader may be implemented from this document
 alone, and so that two readers given the same store give the same answer to every query.
@@ -25,7 +26,9 @@ The design of the store is motivated by the following goals:
   stored changes no longer fit the lines they were written against, or disagree, the rules still
   give one content, and report what wants attention beside it.
 - **Reading without the tool.** A store is written only by the `orthant` tool, but may be read
-  by anything. Reading needs no state outside the store, and changes nothing in it.
+  by anything. Reading needs no state outside the store, and changes nothing in it. A store
+  one of whose axes has a source is the one exception: it is read together with the commits of
+  a git repository, which never change.
 
 ## 1. Status
 
@@ -73,6 +76,10 @@ and is carried onto the storage parent's content by **re-basing** (§9.6), which
 two contents with a prescribed difference algorithm (§10). A hunk whose lines have changed
 beneath it is **stale**; it is still applied, and is reported.
 
+One axis of a store may have a **source** (§7.4). Its values are commits of a git repository,
+and what a commit has is the content at that commit where nothing else varies: the store holds
+only what differs from it along the other axes.
+
 A reader therefore does three things: it reads the configuration and the records (§5–§8); it
 derives contents on demand (§9–§10); and it answers queries about them (§11–§12).
 
@@ -109,6 +116,10 @@ axis are in a single lineage, one is more specific than the other.
 The **storage axis** of a point other than the root point is the first axis on which its value
 is not the root. Its **storage parent** is the point which differs from it only on that axis,
 where it takes the parent of the point's value. The root point has neither.
+
+An axis which has a source (§7.4) is **sourced**. In a store which has a sourced axis, a
+**source point** is a point which takes the root of every axis but the sourced one. The root
+point of such a store is a source point.
 
 A **document** is named by its **path**: one or more **components**, joined by `/`.
 
@@ -192,6 +203,11 @@ A point directory's name MUST name each axis at most once, MUST name only axes a
 the configuration has, and MUST NOT give the root of an axis. A name which does otherwise does
 not name a point (**↯/o.1.7**). It follows that the root point is named only by `root`.
 
+A store MUST hold no record at a source point (§4): the content there is the source's alone
+(§9.1). A file beneath a directory which names a source point is **↯/o.1.9**. In a store which
+has a sourced axis that is every file beneath `root`, and beneath a directory whose one pair
+names the sourced axis.
+
 The pairs SHOULD be in the order of the axes. A reader MUST read them as a set, in whatever
 order they come: adding an axis to a store renames no directory.
 
@@ -259,13 +275,16 @@ most one, and *any* any number:
 
 | Keyword | Within | Occurs | Value |
 |---|---|---|---|
-| `format` | the document | once | the version of this format: `1` |
+| `format` | the document | once | the version of this format: `1`, or `2` if an axis has a `source` |
 | `tree` | the document | once | the directory of the working tree, relative to the store's home (§15) |
 | `axis` | the document | any | an axis; the order of occurrence is the order of the axes |
 | `name` | `axis` | once | an `axis-name` (§6.2) |
 | `kind` | `axis` | once | `language`, `custom` or `git` |
 | `prefer` | `axis` | once | `own` or `parent` (§9.5) |
 | `pattern` | `axis` | optional | on an axis of kind `git`, the tags it follows (§7.3) |
+| `source` | `axis` | optional | in a store of format `2`, where the axis's content comes from (§7.4) |
+| `repository` | `source` | optional | the path of a git repository, relative to the store's home (§7.4) |
+| `prefix` | `source` | optional | a directory of the repository's tree (§7.4) |
 | `value` | `axis` | any | a value of the axis |
 | `name` | `value` | once | a `value-name` (§6.2) |
 | `parent` | `value` | optional | the name of the value's parent; absent for the root |
@@ -274,8 +293,8 @@ most one, and *any* any number:
 | `commit` | `value` | optional | a commit's hash (§7.3) |
 | `branch` | `value` | optional | `true` or `false` (§7.3) |
 
-Version 1 defines no other member. A reader MUST refuse a store whose `format` is not `1`
-(**↯/o.5.1**). A reader SHOULD ignore a member which this table does not have: one may be added
+Neither version defines any other member. A reader MUST refuse a store whose `format` is
+neither `1` nor `2`, and a store of format `1` in which an axis has a `source` (**↯/o.5.1**). A reader SHOULD ignore a member which this table does not have: one may be added
 without a new version, provided that it has no bearing on content.
 
 ### 7.2 Axes and Values
@@ -328,7 +347,63 @@ affect content.
 Labels are not names: they do not appear in point directories, and are used only to resolve a
 term (§12.2) and to show a value.
 
-### 7.4 Written Form *(Informative)*
+### 7.4 Sourced Axes
+
+In a store of format `2`, an axis with a `source` member is **sourced**. Each of its values
+stands for a commit of a git repository, the **source**, and the tree of that commit gives the
+content at the value's source point (§9.1).
+
+```
+format 2
+tree work
+axis
+  name patch
+  kind custom
+  prefer own
+  value
+    name none
+  value
+    name one
+    parent none
+axis
+  name upstream
+  kind git
+  prefer own
+  value
+    name 77e0d1a9c0de
+    label 3.7.0
+    commit 77e0d1a9c0de41f0b6a2c3d4e5f60718293a4b5c
+  source
+    repository ../scala3
+    prefix library/src
+```
+
+- At most one axis is sourced, and it MUST be the last axis. Every point which is not a source
+  point then has an earlier storage axis, and nothing is ever derived along the sourced axis.
+- Every value of a sourced axis MUST have a `commit`, the full hash of the commit it stands
+  for, and MUST NOT have `branch true`: a value never moves. A store which breaks either rule,
+  or the one before, cannot be read (**↯/o.5.1**).
+- `repository` says where the source is found: a path relative to the store's home. Without
+  it, the source is the repository which the home is in. It tells whoever opens the store which
+  repository to give the reader (§12.2); a reader does not find the repository for itself.
+- `prefix` is a path of one or more components. The **source path** of a document is its path
+  beneath the prefix, the two joined by `/`, or the document's path alone if there is no
+  prefix.
+- The commit of a value which has a parent MUST be a descendant of its parent's commit
+  (**↯/o.7.6**): the tree of values is one which the source's history allows. Which of a
+  commit's ancestors among the values is its parent is otherwise for whoever wrote the store.
+
+The **source content** of a document at a value of the sourced axis is found from the tree of
+the value's commit. If the tree has a regular file at the document's source path, and its bytes
+are well-formed UTF-8, the source content is the lines of that text (§5). Otherwise — nothing
+is there, or a directory, a symbolic link or a submodule is, or the bytes are not UTF-8 — the
+document has no source content at that value. A commit's hash fixes its tree, so the source
+content never changes, and content remains a function of the store.
+
+A reader which cannot read an object it needs MUST fail (**↯/o.7.5**), and MUST NOT take the
+document to be absent.
+
+### 7.5 Written Form *(Informative)*
 
 The tool writes the configuration with no pragma, comment, tabulation or literal atom, and with
 two spaces of indentation for each level. In that form every line is some number of pairs of
@@ -465,11 +540,22 @@ parent and at the storage parents of `p`'s origins, each of which is nearer the 
 `p` is; so the recursion ends. A reader SHOULD keep each rendition it derives, since each is
 needed many times over.
 
-### 9.1 The Root Point
+### 9.1 The Root Point and Source Points
 
-At the root point, if the store holds a base record for `d`, the content is that record's, the
-reference is empty, and there are no placements and no issues. Otherwise the rendition is
-absent.
+In a store with no sourced axis: at the root point, if the store holds a base record for `d`,
+the content is that record's, the reference is empty, and there are no placements and no
+issues. Otherwise the rendition is absent.
+
+In a store with a sourced axis: at a source point, if `d` has a source content at the point's
+value on the sourced axis (§7.4), the content is that, the reference is empty, and there are no
+placements and no issues. Otherwise the rendition is absent. The store holds no record there
+(§6.3).
+
+§9.2–§9.8 are for every other point, and are the same whether or not the store has a sourced
+axis. A point which is not a source point has a storage axis before the sourced one, so its
+storage parent is not along the sourced axis, and its origins include the points which have
+the ancestors of its commit: a hunk stored at one commit is located in the content at that
+commit, and re-based onto the content at a later one.
 
 ### 9.2 Origins
 
@@ -496,7 +582,9 @@ empty to begin with. At each origin `o`:
 1. If the store holds no record for `d` at `o`, go on to the next origin.
 2. If it holds a delta record, add `o` to the end of `Δ`, and go on to the next origin.
 3. If it holds a base record and `Δ` is empty, the rendition has that record's content, an
-   empty reference, no placements and no issues. Stop.
+   empty reference and no placements. It has no issues, unless the store has a sourced axis
+   and `d` is not absent at `q`: then it has one, that the record at `o` is an **overlay**
+   (§9.9). Stop.
 4. If it holds an absent record and `Δ` is empty, the rendition is absent. Stop.
 5. Otherwise — a base or an absent record, and `Δ` is not empty — take no further origins.
 
@@ -696,7 +784,20 @@ The issues of the rendition are, in order:
 
 A hunk of another origin which is not located is an issue at that origin, and not at `p`.
 
-A rendition which §9.1 or §9.3 gives outright, from a base record, has no issues.
+A rendition which §9.1 or §9.3 gives outright has no issues, but for an overlay.
+
+In a store with a sourced axis there are two more issues, each of which names an origin. They
+arise where the source has changed which documents it has, beneath what is stored:
+
+- An **overlay** (§9.3, step 3): a base record gives `d` whole at a point where it would exist
+  without that record. The source has come to have a document of the same path as one which
+  the store adds. The content is the record's.
+- **Baseless** hunks: `d` is absent at `p` because it is absent at `q`, and `Δ` is not empty.
+  The issues of `d` at `p` are then, for each origin in `Δ` whose delta record has a hunk, in
+  the order of `Δ`, that its hunks are baseless. The source no longer has the document which
+  they were written against. This is the one case in which an absent rendition has issues.
+
+Neither makes a store invalid.
 
 In a valid store no rendition has an orphan or an ambiguous hunk (**↯/o.1.8**). Stale
 placements and conflicts are not errors: they are the ordinary condition of a store in which
@@ -778,10 +879,11 @@ The **work** in a document at a point is:
 | `total` | at a translation, the number of lines of the reference which are not empty; elsewhere 0 |
 | `pending` | the pending lines |
 | `stale` | the placements which are stale |
-| `faults` | the number of issues which are not stale placements: conflicts, orphans, ambiguous hunks |
+| `faults` | the number of issues which are not stale placements: conflicts, orphans, ambiguous hunks, overlays, baseless hunks |
 
 A document **wants attention** at a point if it has a pending line, a stale placement or a
-fault there. The work of an absent rendition is nothing. The work **at a point** is the sum,
+fault there. The work of an absent rendition is nothing, but for its `faults`, which are the
+baseless hunks it has (§9.9). The work **at a point** is the sum,
 over every document in the store, of `total`, of the number of pending lines, of the number of
 stale placements and of `faults`.
 
@@ -799,7 +901,9 @@ no result, and reports the error code named.
 - **Results are functions of the store.** Every operation's result depends only on the files of
   the store, and — for `checked-out`, `find` and `export` alone — on what else its definition
   names. A reader MUST NOT consult the working tree, the repository's history or the
-  environment to answer any other.
+  environment to answer any other. For a store with a sourced axis, the commits of the source
+  which its values name, and whether one is an ancestor of another, are part of what the
+  store is: they never change, and a reader consults nothing else of the source.
 - **One snapshot.** The tool replaces each file whole, but a change to the store may replace
   several. A reader SHOULD answer every query of one session from one state of the store, and
   SHOULD read from a git commit where it can. A reader which reads a filesystem while the store
@@ -815,7 +919,10 @@ no result, and reports the error code named.
 A reader MUST provide each of these.
 
 **`open(home)` → a store.** Reads the configuration and finds the records of the store whose
-home is given. It fails if there is no store there (**↯/o.4.1**), and if the store is invalid in
+home is given. For a store with a sourced axis the reader is also given the source: something
+which answers, for a commit's hash, what regular file its tree has at a path, what entries a
+directory of its tree has, and whether another commit is its ancestor. A reader which is not
+given one MUST fail when it needs it (**↯/o.7.5**). It fails if there is no store there (**↯/o.4.1**), and if the store is invalid in
 any way which can be found without deriving content: every condition which makes a store
 invalid (§13) but **↯/o.1.8**. It MAY read the records' files then or when
 they are first needed, provided that an operation which needs a malformed record fails as
@@ -940,6 +1047,7 @@ this specification defines; the tool has others, for operations which are not sp
 | **↯/o.1.6** | a delta file's header names an axis which is not its point's storage axis | §8.2 |
 | **↯/o.1.7** | a directory of `.orthant/data/` does not name a point | §6.3 |
 | **↯/o.1.8** | a stored hunk is not located in its storage parent's content | §8.3, §9.4 |
+| **↯/o.1.9** | the store holds a record at a source point | §6.3 |
 | **↯/o.2.1** | a value is not on the axis | §7.2, §12.2 |
 | **↯/o.2.2** | an axis has no root, or more than one | §7.2 |
 | **↯/o.2.3** | a value's parents form a cycle | §7.2 |
@@ -948,10 +1056,14 @@ this specification defines; the tool has others, for operations which are not sp
 | **↯/o.4.1** | there is no store | §7.1, §12 |
 | **↯/o.4.5** | a file could not be read, or is not UTF-8 | §5 |
 | **↯/o.4.11** | a strict export found a document which wants attention | §12.3 |
-| **↯/o.5.1** | the configuration could not be read, is of a format other than 1, or has a name twice | §6.2, §7 |
+| **↯/o.5.1** | the configuration could not be read, is of a format other than 1 or 2, has a name twice, or has a source which §7.4 does not allow | §6.2, §7 |
+| **↯/o.7.5** | the source could not be read, or none was given | §7.4, §12.2 |
+| **↯/o.7.6** | on a sourced axis, a value's commit does not descend from its parent's | §7.4 |
 
-A store is **invalid** if any of **↯/o.1.1**–**↯/o.1.8**, **↯/o.2.1**–**↯/o.2.3** or
-**↯/o.5.1** holds of it, or if a file of it is **↯/o.4.5**. The conditions **↯/o.2.7**,
+A store is **invalid** if any of **↯/o.1.1**–**↯/o.1.9**, **↯/o.2.1**–**↯/o.2.3**, **↯/o.5.1**
+or **↯/o.7.6** holds of it, or if a file of it is **↯/o.4.5**. **↯/o.7.6**, like **↯/o.1.8**,
+is found by `faults` and not by `open`. **↯/o.7.5** is a failure to read, and says nothing of
+whether the store is valid. The conditions **↯/o.2.7**,
 **↯/o.2.8**, **↯/o.4.1** and **↯/o.4.11**, and **↯/o.2.1** where a term names a value which
 its axis does not have, are failures of an operation, and say nothing about the store.
 
@@ -1092,13 +1204,18 @@ configuration's `format` gives the version of the store, and each delta file's h
 version of that file; a reader MUST refuse either if it is of a version the reader does not
 know (**↯/o.5.1**, **↯/o.1.4**), and MUST NOT read what it can of it.
 
+Version 2 is version 1 with sourced axes (§7.4). A reader of version 1 alone would take the
+content of such a store to be what its records give, and so it is a version of its own; a
+store which has no sourced axis is of version 1, and is read as it always was. The delta
+files of both are of version 1.
+
 A later version may give a hunk's anchor as a position, a count and a hash of the replaced
 lines instead of their text. A reader SHOULD therefore keep locating (§9.4) apart from what
 follows it.
 
 ## 17. Completeness of this Specification
 
-This specification is complete for reading version 1 of the store: the layout (§6), the
+This specification is complete for reading versions 1 and 2 of the store: the layout (§6), the
 configuration (§7), the records (§8), the content of every document at every point with its
 placements and issues (§9, §10), the work which remains (§11) and the operations of a reader
 (§12). Its error codes are tabulated once, in §13, and each is referenced where its condition
@@ -1110,6 +1227,7 @@ It does not specify:
   hunk, and the invariants which a change keeps;
 - the views of a working tree other than the one of §12.4, and how an edited view is read back;
 - how an axis of kind `git` is synchronized with a repository;
+- how a commit which is not a value of a sourced axis is read as one, or is made one;
 - the command line of the `orthant` tool.
 
 These are described in [`design/engine.md`](../design/engine.md).

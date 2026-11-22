@@ -321,7 +321,8 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted, held.upstr
 
         val root = Sourcing.root(this.root, source, value)
         val entry = AxisEntry(name, kind, t"own", List(root), pattern, source)
-        Workspace.open(configure(settings.copy(axis = unsourced + List(entry))).root)
+        val later = settings.copy(format = Settings.sourced, axis = unsourced + List(entry))
+        Workspace.open(configure(later).root)
 
   // The store with a new value on an axis, beneath `parent` or else beneath the axis's root.
   def value(axis: Text, value: Text, parent: Optional[Text])

@@ -249,6 +249,43 @@ it too, and the sync says so.
 
 A sync adds values and renames one; by invariant 6 it changes no content.
 
+## A sourced axis
+
+An axis may have a source (`spec/store.md` §7.4): its values are commits of a git repository,
+and the content at a commit, where every other axis is at its root, is what the commit's tree
+has. The store holds nothing at those source points, and every other point derives as it
+always did, its storage parent and its origins being found from the earlier axes. So a patch
+checked in at one commit is hunks against the source there, and is re-based onto the source at
+each later commit as any hunk is onto a storage parent which has changed.
+
+- **The engine reads nothing.** A `Dossier` is given a `Source`, which answers for a value of
+  the sourced axis with the document's lines. The reader makes one for each document from an
+  `Upstream`, which is the repository as far as a reader needs it; the tool's is
+  `Sourcing.Repository`, over the git library.
+- **The axis is a tree, and the history is not.** A value's parent is one of the values whose
+  commits are its commit's ancestors. `check` refuses a parent which is not (`↯/o.7.6`), and
+  the tool gives a new value the nearest of them, refusing a commit which has two, neither an
+  ancestor of the other (`↯/o.7.2`). Lineage over the true history is not attempted.
+- **A commit need not be a value.** Wherever a value is named, a revision of the source may
+  be: the commit is put beneath its nearest ancestor among the values, and above those of that
+  value's children which descend from it, in memory. By invariant 6 that changes no content,
+  and the configuration is not written. The commit must descend from the axis's root
+  (`↯/o.7.8`), and where the repository's history is shallow and does not reach it, that is
+  said (`↯/o.7.9`).
+- **A check-in at such a commit makes it a value**, with the configuration written then. Its
+  children among the values, which were its parent's, inherit what was checked in, as any
+  point below a check-in does.
+- **A branch is not a value.** A name of a branch is a revision like any other, and is the
+  commit it names when the command is run. `sync` takes up the tags of the source's
+  repository, and tracks no branch (`↯/o.7.10`).
+- **The working tree is the source's**, with the store's documents written over it: a
+  checkout writes only the documents which have a record somewhere. A file which is in the
+  tree alone is the source's, and is not a change unless a check-in names it; it is then read
+  as plain content, whatever the mode of the view.
+- **Two issues are the source's doing** (`spec/store.md` §9.9): hunks whose document the
+  source no longer has are baseless, and a base record for a document which the source has
+  come to have is an overlay. Neither is an error, and `status` reports both.
+
 ## Invariants
 
 1. After a check-in, the checked-out point's content is the new content.
@@ -285,6 +322,8 @@ Two details of the invariants as tested:
 - Views against a point other than the storage parent.
 - Renames of documents; a count-and-hash encoding of anchors; a git merge driver.
 - Re-parenting a value when a tag appears between two values which a sync has already made.
+- On a sourced axis: lineage over the true history of commits, where a commit has two parents;
+  and following a document which the source renames.
 - Upgrading the tool in place, as `tel upgrade` does: Orthant has no releases to upgrade to.
 
 ## Bolt codes
@@ -301,6 +340,7 @@ Every error Orthant raises has a bolt code with the letter `o`.
 | `↯/o.1.6` | a delta's header names an axis which is not its point's storage axis |
 | `↯/o.1.7` | a directory of the store's data does not name a point |
 | `↯/o.1.8` | a stored hunk does not have its lines exactly once in its storage parent |
+| `↯/o.1.9` | the store holds a record at a point whose content is the source's |
 | `↯/o.2.1` | a value is not on the axis |
 | `↯/o.2.2` | an axis has no root, or more than one |
 | `↯/o.2.3` | a value's parents form a cycle |
@@ -315,6 +355,7 @@ Every error Orthant raises has a bolt code with the letter `o`.
 | `↯/o.3.3` | a stored hunk would not locate exactly once |
 | `↯/o.3.4` | a change could not be carried to the point it was sent to |
 | `↯/o.3.5` | the changes, stored where they were sent, would not give the checked-in content |
+| `↯/o.3.6` | the check-in is at a point whose content is the source's |
 | `↯/o.4.1` | there is no store in the directory or above it |
 | `↯/o.4.2` | the working tree has edits which are not checked in |
 | `↯/o.4.3` | the store's content changed since the document was checked out |
@@ -337,6 +378,12 @@ Every error Orthant raises has a bolt code with the letter `o`.
 | `↯/o.7.2` | a tag has more than one nearest ancestor among the axis's values |
 | `↯/o.7.3` | the repository has no such branch |
 | `↯/o.7.4` | the axis does not follow a git repository |
+| `↯/o.7.5` | the source of an axis could not be read, or none was given |
+| `↯/o.7.6` | on a sourced axis, a value's commit does not descend from its parent's |
+| `↯/o.7.7` | the source's repository has no commit which the revision names |
+| `↯/o.7.8` | the commit does not descend from the root of the sourced axis |
+| `↯/o.7.9` | the source's history is shallow, and does not reach from the commit to a value |
+| `↯/o.7.10` | a branch was to be tracked on a sourced axis |
 | `↯/o.8.1` | the launcher did not apply an upgrade which was staged |
 | `↯/o.8.2` | the executable has no key, so it cannot be upgraded in place |
 | `↯/o.8.3` | the newest release has no executable for the platform |
@@ -344,4 +391,5 @@ Every error Orthant raises has a bolt code with the letter `o`.
 | `↯/o.8.5` | the downloaded executable could not be staged |
 
 Subdivisions: 1 the store format; 2 axes and points; 3 check-in; 4 the working tree and views;
-5 the configuration; 6 the command line; 7 synchronizing with git.
+5 the configuration; 6 the command line; 7 git: following a repository, and the source of an
+axis; 8 upgrading the tool.

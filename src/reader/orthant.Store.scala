@@ -198,8 +198,11 @@ object Store:
     def refuse(detail: Text): Nothing = abort(Error(Reason.Config(detail)))
 
     // A store of another version is not read for what can be made of it.
-    if settings.format != Settings.format
+    if settings.format != Settings.format && settings.format != Settings.sourced
     then refuse(t"the store is of format ${settings.format}, and not ${Settings.format}")
+
+    if settings.format == Settings.format then settings.axis.filter(_.source.present).each: entry =>
+      refuse(t"the axis ${entry.name} has a source, which a store of format 1 cannot have")
 
     // A name which two axes had, or two values of an axis, would name neither.
     def twice(names: List[Text]): Optional[Text] =
