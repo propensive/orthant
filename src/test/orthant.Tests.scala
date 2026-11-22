@@ -442,6 +442,20 @@ object Tests extends Suite(m"Orthant tests"):
 
         . assert(_ == (List(etre, t"", telle, t"", exit), 2, true))
 
+        test(m"Two lines left out, and later translated together, are each held as one hunk"):
+          val omitted = List(t"- $be", t"+ $etre", t"", t"- $question", t"", t"- $exit")
+
+          val view =
+            List
+              ( t"- $be", t"+ $etre", t"", t"- $question", t"+ $telle", t"", t"- $exit",
+                t"+ $sort" )
+
+          val filled = Indirect.checkin(Indirect.checkin(partial, fr1, omitted), fr1, view)
+          val shown = Indirect.view(filled, fr1) == view
+          (filled.content(fr1), filled.rendition(fr1).let(_.placements.size), shown)
+
+        . assert(_ == (List(etre, t"", telle, t"", sort), 3, true))
+
         test(m"A stale passage left alone is still stale"):
           stale(Indirect.checkin(third, fr2, Indirect.view(third, fr2).or(Nil)), fr2)
 
@@ -1032,6 +1046,32 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == List(t"↯/o.1.8"))
 
+      test(m"A hunk with no place is found where its document is read or changed, not before"):
+        val made = populated()
+        Disk.write(t"${made.data}/root/guide/intro.md", t"Something else.\n", made.staging)
+        val store = Workspace.open(made.root)
+        val root = store.space.root
+        val french = store.locate(root, List(t"fr"))
+        val plain = store.content(t"guide/intro.md", root)
+        Worktree.checkout(store, root, true)
+        edit(store, t"guide/intro.md", t"Something else again.\n")
+
+        ( plain, code(Workspace.load(made.root)), code(store.content(t"guide/intro.md", french)),
+          code(Worktree.checkout(store, french, true)),
+          code(Worktree.checkin(store, Nil, false, false)) )
+
+      . assert(_ == (List(t"Something else."), t"↯/o.1.8", t"↯/o.1.8", t"↯/o.1.8", t"↯/o.1.8"))
+
+      test(m"Documents derived in tasks of their own are as they are when derived in turn"):
+        import threads.virtualThreads
+        val store = populated()
+        val ready = Workspace.inspect(store.root)
+        supervise(ready.prepare(ready.points))
+        def all(store: Workspace) = store.points.map(store.content(t"guide/intro.md", _))
+        (all(ready) == all(store), ready.faults.size, all(ready).size)
+
+      . assert(_ == (true, 0, 6))
+
       test(m"An indirect check-out writes views, and a check-in of one stores its content"):
         val store = populated()
         val french = store.locate(store.space.root, List(t"fr", t"v2"))
@@ -1305,6 +1345,17 @@ object Tests extends Suite(m"Orthant tests"):
         (stale.map(_.from + 1), stale.map(Worktree.line(store, t"guide/intro.md", _)))
 
       . assert(_ == (List(3), List(4)))
+
+      test(m"A stale passage is found by its line in a view against a change"):
+        val store = populated()
+        val point = store.locate(store.space.root, List(t"fr", t"v2"))
+        Worktree.checkout(store, point, false, Worktree.Mode.Against(t"release", t"v1"))
+        val stale = Survey.work(store, t"guide/intro.md", point).stale
+        val shown = Store.lines(Disk.read(t"${store.tree}/guide/intro.md").or(t""))
+        val found = stale.map(Worktree.line(store, t"guide/intro.md", _))
+        (found, found.map { line => shown.excerpt(line - 1, line).join })
+
+      . assert(_ == (List(3), List(t"! Run it.")))
 
       test(m"The points at or below a value are every one which has it or a descendant of it"):
         val store = fixture()
@@ -1777,6 +1828,22 @@ object Tests extends Suite(m"Orthant tests"):
             List(t"First."), List(t"First.", t"Second."), List(t"First.", t"Second."),
             List(t"release=333333333333", t"root"), 2, 0, 0 )
 
+      test(m"A sync which labels, adds and releases writes what it leaves in memory"):
+        val store = Sync(fixture(), t"release", refs(List((t"v1", one)), two), Nil)(0)
+        val later = refs(List((t"v1", one), (t"v1.0", one), (t"v2", two), (t"v3", three)), three)
+        val (synced, notes) = Sync(store, t"release", later, Nil)
+        (values(Workspace.load(store.root)) == values(synced), values(synced), notes.size)
+
+      . assert: result =>
+          result == (
+            true,
+            List
+              ( (t"start", t"-", t"-"), (t"111111111111", t"start", t"v1 v1.0"),
+                (t"222222222222", t"111111111111", t"v2"),
+                (t"333333333333", t"222222222222", t"v3"),
+                (t"main", t"333333333333", t"(branch)") ),
+            3 )
+
       test(m"A tag with two nearest ancestors is refused, and may be given its parent"):
         val tags = List((t"v1", one), (t"v2", two), (t"v2-side", side))
         val store = Sync(fixture(), t"release", refs(tags, three), Nil)(0)
@@ -1806,6 +1873,14 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ < 8.0)
 
     suite(m"Invariants over random check-ins"):
+      // What `orthant.fingerprints 200` printed when the engine was last changed in a way
+      // which was to change nothing stored or derived. If the store's format or what is
+      // derived is changed on purpose, this number is to be replaced with what it prints then.
+      test(m"Runs of random check-ins store and derive what they did before"):
+        Digests.first(200)
+
+      . assert(_ == 679734980)
+
       List.range(1, 41).each: seed =>
         test(m"A run of random check-ins keeps every invariant (seed $seed)"):
           Trials.trial(seed, 25)

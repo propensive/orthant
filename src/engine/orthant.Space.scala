@@ -20,6 +20,7 @@ package orthant
 
 import proscenium.{List, Map, `::`}
 import soundness.*
+import soundness.sortingAlgorithms.timsort
 
 // One value on each axis, keyed by the axis's name. A point of a `Space` is total: it names a
 // value for every axis.
@@ -73,8 +74,18 @@ case class Space(axes: List[Axis]):
 
       recur(axes, List(point))
 
+  // The points are asked for often, and are found once.
+  private val every: java.util.concurrent.atomic.AtomicReference[List[Point]] =
+    java.util.concurrent.atomic.AtomicReference()
+
   // Every point, each after all the points it is below.
   def points: List[Point] raises Axis.Error =
+    Optional(every.get).or:
+      val found = arrange
+      every.set(found)
+      found
+
+  private def arrange: List[Point] raises Axis.Error =
     def recur(todo: List[Axis], points: List[Point]): List[Point] = todo match
       case head :: tail =>
         val values = head.values.map(_.name)
@@ -83,8 +94,6 @@ case class Space(axes: List[Axis]):
       case _ =>
         points
 
-    val all = recur(axes, List(root))
-    val deepest = all.map { point => depths(point).fold(0)(_ + _) }.fold(0)(_.max(_))
-
-    List.range(0, deepest + 1).bind: depth =>
-      all.filter: point => depths(point).fold(0)(_ + _) == depth
+    // The sort keeps points of one depth in the order they were made in.
+    recur(axes, List(root)).map { point => (depths(point).fold(0)(_ + _), point) }.order(_(0))
+    . map(_(1))

@@ -22,6 +22,7 @@ import proscenium.{List, Nil, Map}
 import soundness.*
 import soundness.errorDiagnostics.emptyDiagnostics
 import soundness.filesystemBackends.javaBaseFilesystem
+import soundness.probates.cancelProbate
 import soundness.systems.javaBaseSystem
 
 // A store as the tool has it: on a disk, beneath a directory, where it is changed as well as
@@ -161,14 +162,27 @@ object Workspace:
   // The store beneath `root`, and everything which is wrong with what it holds. A file which
   // cannot be read as a record is left out.
   def scan(root: Text): (Workspace, List[Store.Error]) raises Store.Error =
-    val store = Store.inspect(Disk.path(root))
-    (Workspace(root, store), store.faults)
+    val store = inspect(root)
+    (store, store.faults)
+
+  // The store beneath `root`, with whatever of its records can be read; the rest are among its
+  // `omitted`.
+  def inspect(root: Text): Workspace raises Store.Error =
+    Workspace(root, Store.inspect(Disk.path(root)))
 
   // The store beneath `root`, which must have nothing wrong with it.
   def load(root: Text): Workspace raises Store.Error =
     val (store, faults) = scan(root)
     faults.head.let(abort(_))
     store
+
+  // The store beneath `root`, of which every record must be readable. Nothing is derived, so a
+  // hunk which has no one place is not found here: it is found when the document it is in is
+  // read at its point, or changed, and `scan` finds them all.
+  def open(root: Text): Workspace raises Store.Error =
+    val store = Store.inspect(Disk.path(root))
+    store.omitted.head.let(abort(_))
+    Workspace(root, store)
 
 // A store on disk: the directory `root` which has `.orthant` in it, and the store as it was
 // read from there, or as it has since been made.
@@ -222,13 +236,28 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
     holding(if present then dossiers.omit(document) else dossiers.define(document, updated))
 
   // The store with a new configuration, which is written.
-  def configure(settings: Settings): Workspace raises Store.Error =
+  def configure(settings: Settings): Workspace raises Store.Error = adopt(settings).inscribe()
+
+  // Writes the configuration the store has.
+  def inscribe(): Workspace raises Store.Error =
     Disk.write(t"$folder/config.tel", Store.text(Store.lines(settings.in[Tel].show)), staging)
+    this
+
+  // The store with a new configuration, which is not written. A record at a point of this
+  // store is, in that one, at the point which `place` gives for it.
+  def adopt(settings: Settings, place: Point => Point = point => point)
+  :   Workspace raises Store.Error =
+
     val space = Store.sound(settings.space)
 
     // Each dossier is of the space it was read in, so it is made again in the new one.
     val moved = documents.fold(Map[Text, Dossier]()): (moved, document) =>
-      moved.define(document, Dossier(space, dossier(document).folios))
+      val former = dossier(document).folios
+
+      val folios = former.keys.to[List].fold(Map[Point, Folio]()): (folios, point) =>
+        former.at(point).lay(folios)(folios.define(place(point), _))
+
+      moved.define(document, Dossier(space, folios))
 
     Workspace(root, new Store(settings, space, moved, omitted))
 
@@ -281,6 +310,16 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
     configure:
       settings.copy(axis = settings.axis.map: entry =>
         if entry.name == axis then entry.copy(prefer = name) else entry)
+
+  // Derives every document at the points given, each document in a task of its own, so that
+  // whatever then reads them there finds them derived: no document's content depends on
+  // another's. Nothing is refused here; what is wrong with a document is found when it is read.
+  def prepare(points: List[Point])(using Monitor): Unit =
+    val tasks = documents.map: document =>
+      val held = dossier(document)
+      async(points.each { point => safely(held.rendition(point)) })
+
+    tasks.each: task => safely(task.await())
 
   // The store in which a document has the dossier given, with nothing written.
   def supposing(document: Text, dossier: Dossier): Workspace =

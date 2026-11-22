@@ -188,7 +188,8 @@ object Store:
 
     // A name which two axes had, or two values of an axis, would name neither.
     def twice(names: List[Text]): Optional[Text] =
-      names.filter { name => names.count(_ == name) > 1 }.head
+      val counts = names.stdlib.groupBy { name => name }.view.mapValues(_.size).toMap
+      names.filter { name => counts(name) > 1 }.head
 
     twice(settings.axis.map(_.name)).let: name => refuse(t"more than one axis is named $name")
 
@@ -385,7 +386,7 @@ class Store
   def rendition(document: Text, point: Point): Optional[Rendition] raises Error =
     sound(dossier(document).rendition(point))
 
-  private def unplaced(document: Text, point: Point): Boolean raises Error =
+  private def misplaced(document: Text, point: Point): Boolean raises Error =
     sound(dossier(document).issues(point)).exists:
       case Issue.Orphan(_, _)    => true
       case Issue.Ambiguous(_, _) => true
@@ -394,7 +395,7 @@ class Store
   // The content of a document at a point, as its lines. A content which would come of a hunk
   // with no one place is not given: `rendition` gives it, with the issue.
   def content(document: Text, point: Point): Optional[List[Text]] raises Error =
-    if unplaced(document, point)
+    if misplaced(document, point)
     then abort(Error(Reason.Unplaced(document, name(point))))
     else rendition(document, point).let(_.lines)
 
@@ -402,10 +403,13 @@ class Store
   def text(document: Text, point: Point): Optional[Data] raises Error =
     content(document, point).let: lines => utf8Codepage.encoded(Store.text(lines))
 
-  // Everything which makes the store invalid; it is valid if there is nothing.
-  def faults: List[Error] raises Error =
-    val unplaced: List[Error] = documents.bind: document =>
-      points.bind: point =>
+  // Each point at which one of the documents given has a hunk with no one place. Finding them
+  // derives every one of those documents at every point.
+  def unplaced(documents: List[Text]): List[Error] raises Error =
+    val every = points
+
+    documents.bind: document =>
+      every.bind: point =>
         val found = sound(dossier(document).issues(point)).exists:
           case Issue.Orphan(origin, _)    => origin == point
           case Issue.Ambiguous(origin, _) => origin == point
@@ -413,7 +417,19 @@ class Store
 
         if found then List(Error(Reason.Unplaced(document, name(point)))) else Nil
 
-    omitted + unplaced
+  // Everything which makes the store invalid; it is valid if there is nothing.
+  def faults: List[Error] raises Error = omitted + unplaced(documents)
+
+  // The work in a document at a point is asked for by every point which inherits from it, and
+  // is found once.
+  private val works: scala.collection.mutable.HashMap[(Text, Point), Survey.Work] =
+    scala.collection.mutable.HashMap()
+
+  private[orthant] def recall(document: Text, point: Point)(work: => Survey.Work): Survey.Work =
+    works.get((document, point)).getOrElse:
+      val found = work
+      works((document, point)) = found
+      found
 
   def work(document: Text, point: Point): Survey.Work raises Error =
     sound(Survey.work(this, document, point))

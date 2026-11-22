@@ -144,11 +144,16 @@ object Worktree:
       case Mode.Against(name, value) =>
         Indirect.alterationView(dossier, point, former(store, dossier, point, name, value))
 
-  // A document as the working tree shows it at a point, or `Unset` if it is not there.
+  // A document as the working tree shows it at a point, or `Unset` if it is not there. It is
+  // not shown if a hunk stored at the point has no one place.
   def render(store: Workspace, document: Text, point: Point, mode: Mode)
   :   Optional[List[Text]] raises Store.Error raises Axis.Error =
 
-    show(store, store.dossier(document), point, mode)
+    store.content(document, point).let: plain => show(store, store.dossier(document), point, mode)
+
+  // A document is changed only if every hunk the store has for it, at any point, has a place.
+  private def placed(store: Workspace, document: Text): Unit raises Store.Error =
+    store.unplaced(List(document)).head.let(abort(_))
 
   // What the lines of a document in the working tree ask for.
   private def request
@@ -239,6 +244,7 @@ object Worktree:
       case error: Indirect.Error => refused(store, document, point, error, error.bolt)
 
     . protect:
+        placed(store, document)
         val dossier = store.dossier(document)
         val asked = content.let(request(store, dossier, point, mode, _))
         val base = asked.lay(dossier)(Indirect.confirm(dossier, point, _))
@@ -285,7 +291,7 @@ object Worktree:
       then abort(Workspace.Error(Workspace.Reason.Suffix(document)))
 
     val skipped = selected.filter: change => change.kind == Kind.Missing && !remove
-    val stored = selected.filter(!skipped.has(_))
+    val stored = selected.filter: change => change.kind != Kind.Missing || remove
 
     val updates: List[(Change, Dossier)] = stored.map: change =>
       val content = lines(t"${store.tree}/${change.document}")
@@ -350,46 +356,75 @@ object Worktree:
           (next.supposing(change.document, dossier), failed)
 
   // The line of a document in the working tree, counted from one, at which a hunk in place at
-  // the point checked out begins, in the mode the working tree is shown in.
-  def line(store: Workspace, document: Text, placement: Placement)
-  :   Int raises Store.Error raises Workspace.Error raises Axis.Error =
+  // the point checked out begins, in the mode the working tree is shown in. What it is found
+  // from is the same for every hunk of a document, and is worked out once for each.
+  def liner(store: Workspace)
+  :   ((Text, Placement) => Int) raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val point = view(store)
-    val dossier = store.dossier(document)
 
     mode(store) match
       case Mode.Plain =>
-        placement.from + 1
+        (document, placement) => placement.from + 1
 
       case Mode.Beside =>
-        dossier.rendition(point).lay(placement.from + 1): rendition =>
-          // The lines of the reference before the hunk, and those which each hunk before it
-          // adds to them: its `!` lines, and its own.
-          val added = rendition.placements.map: other =>
-            if other == placement || other.end > placement.start then 0
-            else if other.fresh then other.lines.size
-            else other.hunk.former.size + other.hunk.lines.size
+        // For each document, where each hunk in place ends, and the lines which the hunks up
+        // to each add to the reference's: its `!` lines, and its own.
+        val sums = scala.collection.mutable.HashMap[Text, (scala.Array[Int], scala.Array[Int])]()
 
-          placement.start + added.fold(0)(_ + _) + 1
+        def added(placement: Placement): Int =
+          if placement.fresh then placement.lines.size
+          else placement.hunk.former.size + placement.hunk.lines.size
+
+        (document, placement) =>
+          val (ends, totals) = sums.getOrElseUpdate(document, locally:
+            val placed = store.dossier(document).rendition(point).let(_.placements).or(Nil)
+            (placed.map(_.end).stdlib.toArray, placed.map(added).stdlib.toArray.scanLeft(0)(_ + _)))
+
+          // The hunks in place are in order, so those which end before this one begins are the
+          // first of them; it is among them itself if it only inserts.
+          val before = orthant.Content.search(ends.length)(ends(_) > placement.start)
+          val own = if placement.end <= placement.start then added(placement) else 0
+          val line = placement.start + totals(before) - own + 1
+          if ends.length == 0 then placement.from + 1 else line
 
       case Mode.Against(name, value) =>
-        val parts =
-          Indirect.alteration(dossier, point, former(store, dossier, point, name, value)).or(Nil)
+        // For each document, the lines each passage spans, and the line it begins at.
+        val passages = scala.collection.mutable.HashMap[Text, List[(Int, Int, Int)]]()
 
-        def recur(todo: List[Indirect.Shared | Indirect.Passage], count: Int): Int = todo match
-          case (passage: Indirect.Passage) :: tail =>
-            if passage.start <= placement.start && placement.end <= passage.end then count + 1
-            else if passage.pending then recur(tail, count + passage.replaced.size)
-            else
-              recur(tail, count + passage.former.size + passage.replaced.size + passage.lines.size)
+        (document, placement) =>
+          val found = passages.getOrElseUpdate(document, locally:
+            val dossier = store.dossier(document)
 
-          case _ :: tail =>
-            recur(tail, count + 1)
+            val parts =
+              Indirect.alteration(dossier, point, former(store, dossier, point, name, value))
+              . or(Nil)
 
-          case _ =>
-            placement.from + 1
+            parts.fold((List[(Int, Int, Int)](), 0)): (state, part) =>
+              val (found, count) = state
 
-        recur(parts, 0)
+              part match
+                case passage: Indirect.Passage =>
+                  val size =
+                    if passage.pending then passage.replaced.size
+                    else passage.former.size + passage.replaced.size + passage.lines.size
+
+                  ((passage.start, passage.end, count + 1) :: found, count + size)
+
+                case _ =>
+                  (found, count + 1)
+
+            . apply(0).reverse)
+
+          val within = found.filter: (start, end, line) =>
+            start <= placement.start && placement.end <= end
+
+          within.head.let(_(2)).or(placement.from + 1)
+
+  def line(store: Workspace, document: Text, placement: Placement)
+  :   Int raises Store.Error raises Workspace.Error raises Axis.Error =
+
+    liner(store)(document, placement)
 
   private def chosen(document: Text, paths: List[Text]): Boolean =
     paths.nil || paths.exists: path => document == path || document.starts(t"$path/")
@@ -412,6 +447,8 @@ object Worktree:
 
     val blocked = edited.filter: change => found.exists(_(0) == change.document)
     if !blocked.nil then abort(Workspace.Error(Workspace.Reason.Edited(blocked.size)))
+
+    found.each: entry => placed(store, entry(0))
 
     found.fold(store): (store, entry) =>
       val document = entry(0)
@@ -442,13 +479,14 @@ object Worktree:
         val dossier = revise(store, change.document, point, shown, Reach.Below, content)
         (change.document, show(store, dossier, point, next))
 
-    val missing = pending.filter(_.kind == Kind.Missing).map(_.document)
+    val missing = pending.filter(_.kind == Kind.Missing).map(_.document).stdlib.toSet
+    val revised = edited.map(_(0)).stdlib.toSet
 
     store.documents.each: document =>
       render(store, document, point, next).let: lines =>
         put(t"${pristine(store)}/$document", Store.text(lines), store)
 
-        if !missing.has(document) && !edited.exists(_(0) == document)
+        if !missing.contains(document) && !revised.contains(document)
         then put(t"${store.tree}/$document", Store.text(lines), store)
 
     edited.each: (document, content) =>

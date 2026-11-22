@@ -182,3 +182,24 @@ def timingSync(root: String): Unit =
       ( s"${refs.tags.size} tags, ${refs.branches.size} branches; read in " +
         s"${(read - start)/1000000} ms; ${hashes.size*hashes.size} questions, $count yes, in " +
         s"${(asked - read)/1000000} ms" )
+
+// Times finding everything wrong with a store on disk, with its documents derived in turn and
+// then in tasks of their own: `java -cp <test jar> orthant.timingTasks <store's home>`.
+@main
+def timingTasks(root: String): Unit =
+  import strategies.throwUnsafely
+  import threads.virtualThreads
+  def now: Long = java.lang.System.nanoTime
+  def since(start: Long): String = ((now - start)/1000000L).toString+"ms"
+
+  List.range(0, 4).each: round =>
+    val first = Workspace.inspect(root.tt)
+    val begin = now
+    val count = first.faults.size
+    val serial = since(begin)
+    val second = Workspace.inspect(root.tt)
+    val again = now
+    supervise(second.prepare(second.points))
+    val same = second.faults.size == count
+    val tasks = since(again)
+    java.lang.System.out.nn.println("in turn "+serial+"; in tasks "+tasks+"; same: "+same.toString)

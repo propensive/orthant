@@ -567,7 +567,7 @@ object OrthantTool:
   private def here(using cli: Cli): Text = cli.workingDirectory.directory()
 
   private def open()(using Cli): Workspace raises Store.Error =
-    Workspace.load(Workspace.find(here))
+    Workspace.open(Workspace.find(here))
 
   // A point as it is shown: the value on every axis.
   private def describe(store: Workspace, point: Point): Text =
@@ -668,8 +668,10 @@ object OrthantTool:
 
     Exit.Ok
 
-  private def check()(using Cli, Stdio): Raising[Refused.type | Exit] =
-    val (store, faults) = Workspace.scan(Workspace.find(here))
+  private def check()(using Cli, Stdio, Monitor): Raising[Refused.type | Exit] =
+    val store = Workspace.inspect(Workspace.find(here))
+    store.prepare(store.points)
+    val faults = store.faults
 
     faults.each: fault => Err.println(t"orthant: ${fault.bolt.label} ${Orthant.prose(fault)}")
 
@@ -684,7 +686,7 @@ object OrthantTool:
     val store = open()
     val point = store.locate(Worktree.view(store), values)
 
-    store.dossier(document(store, path)).content(point).lay(absent(path, describe(store, point))):
+    store.content(document(store, path), point).lay(absent(path, describe(store, point))):
       lines =>
         Out.print(Store.text(lines))
         Exit.Ok
@@ -702,7 +704,7 @@ object OrthantTool:
 
   // The mode of the view stays as it is unless one is asked for.
   private def checkout(values: List[Text], force: Boolean, indirect: Boolean, direct: Boolean)
-    ( using Cli, Stdio )
+    ( using Cli, Stdio, Monitor )
   :   Raising[Exit] =
 
     val store = open()
@@ -725,6 +727,7 @@ object OrthantTool:
             case Worktree.Mode.Against(_, _) if !values.nil => Worktree.Mode.Beside
             case mode                                       => mode
 
+        store.prepare(List(point))
         val count = Worktree.checkout(store, point, force, mode)
         val place = t"${describe(store, point)}${shown(store, mode)}"
         Out.println(t"Checked out ${documents(count)} at $place")
@@ -814,11 +817,13 @@ object OrthantTool:
       if found.nil then Out.println(t"  nothing is stale")
       Exit.Ok
 
-  private def publish(directory: Text, values: List[Text], strict: Boolean)(using Cli, Stdio)
+  private def publish(directory: Text, values: List[Text], strict: Boolean)
+    ( using Cli, Stdio, Monitor )
   :   Raising[Exit] =
 
     val store = open()
     val point = store.locate(Worktree.view(store), values)
+    store.prepare(List(point))
     val target = if directory.starts(t"/") then directory else t"$here/$directory"
     val count = Worktree.publish(store, point, target, strict)
     Out.println(t"Exported ${documents(count)} at ${describe(store, point)} to $directory")
@@ -850,6 +855,8 @@ object OrthantTool:
     ( using Stdio )
   :   Raising[Unit] =
 
+    val liner: Optional[(Text, Placement) => Int] = if here then Worktree.liner(store) else Unset
+
     works.each: work =>
       val document = work.document
 
@@ -857,7 +864,7 @@ object OrthantTool:
       then Out.println(t"  pending   $document (${lines(work.pending.size)} to translate)")
 
       work.stale.each: placement =>
-        val line = if here then Worktree.line(store, document, placement) else placement.from + 1
+        val line = liner.lay(placement.from + 1)(_(document, placement))
         Out.println(t"  stale     $document:$line")
 
       store.dossier(document).issues(point).each:
@@ -876,7 +883,7 @@ object OrthantTool:
 
   // With no values and without `all`, the point checked out; otherwise every point at or below
   // the values. The edits which are not checked in are counted as if they were.
-  private def status(values: List[Text], all: Boolean)(using Cli, Stdio): Raising[Exit] =
+  private def status(values: List[Text], all: Boolean)(using Cli, Stdio, Monitor): Raising[Exit] =
     val store = open()
     val target = Worktree.view(store)
     Out.println(t"At ${describe(store, target)}${shown(store, Worktree.mode(store))}")
@@ -892,6 +899,7 @@ object OrthantTool:
       Out.println(t"  unready   $document ($reason)")
 
     val counted = if changes.nil then t"" else t", counting the edits not checked in"
+    seen.prepare(if !all && values.nil then List(target) else seen.within(values))
 
     if !all && values.nil then
       report(seen, target, seen.documents.map(Survey.work(seen, _, target)), true)
@@ -939,7 +947,7 @@ object OrthantTool:
       val works = store.documents.map(Survey.own(store, _, point)).filter(_.wanting)
       if works.nil then Nil else List((point, works))
 
-  private def todo(values: List[Text], take: Boolean)(using Cli, Stdio): Raising[Exit] =
+  private def todo(values: List[Text], take: Boolean)(using Cli, Stdio, Monitor): Raising[Exit] =
     val store = open()
 
     if take then Disk.locked(store.lock):
@@ -959,6 +967,7 @@ object OrthantTool:
 
     else
       val (seen, _) = Worktree.prospect(store)
+      seen.prepare(seen.within(values))
       val found = agenda(seen, values)
 
       found.each: (point, works) =>
