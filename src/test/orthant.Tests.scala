@@ -2139,6 +2139,40 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == (2, t"↯/o.5.1"))
 
+      test(m"A sync takes up the tags of the source's repository, and tracks no branch"):
+        val made = fixture()
+        val two = made.commits.excerpt(1, 2).head.or(t"")
+        git(made.upstream, t"tag", t"v2", two)
+
+        val (synced, notes) = Sync.reading(made.upstream): refs =>
+          Sync(made.store, t"upstream", refs, Nil)
+
+        val point = synced.locate(synced.space.root, List(t"v2"))
+
+        val tracked = code:
+          Sync.reading(made.upstream)(Sync(made.store, t"upstream", _, List(t"main")))
+
+        val values = synced.entry(t"upstream").lay(Nil)(_.value.map(_.title))
+        (values, synced.content(t"Main.scala", point), notes.size, tracked)
+
+      . assert(_ == (List(t"v1", t"v2"), Store.lines(second), 1, t"↯/o.7.10"))
+
+      test(m"A commit which a shallow history does not join to the root is refused"):
+        val made = fixture()
+        val store = made.store
+        val shallow = t"${store.root}/../shallow"
+        git(store.root, t"clone", t"-q", t"--depth", t"1", t"file://${made.upstream}", shallow)
+        val file = t"${store.folder}/config.tel"
+        val lines = Store.lines(Disk.read(file).or(t""))
+        val moved = lines.map: line =>
+          if line == t"    repository ../upstream" then t"    repository ../shallow" else line
+
+        Disk.write(file, Store.text(moved), store.staging)
+        val opened = Workspace.open(store.root)
+        code(Sourcing.locate(opened, opened.space.root, List(made.commits.last.or(t""))))
+
+      . assert(_ == t"↯/o.7.9")
+
       test(m"An axis with a source must be the last"):
         val store = fixture().store
         val file = t"${store.folder}/config.tel"
