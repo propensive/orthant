@@ -38,8 +38,10 @@ and storage parent `q`:
 
 ### Locating
 
-A hunk's anchor is its context and replaced lines as one block. One occurrence in the reference
-places the hunk. With none, or several, the hunk stored at that point is reported as an
+A hunk's anchor is its context and replaced lines as one block. The store holds how many lines
+each is and an imprint of the block, a hash from which the imprint of every run of a content is
+quickly had, and not the lines: they are the reference's, where the block is found. One
+occurrence in the reference places the hunk. With none, or several, the hunk stored at that point is reported as an
 **orphan** or as **ambiguous**, and contributes nothing.
 
 ### Re-basing
@@ -155,7 +157,8 @@ At a check-in of a view:
 4. The content is the shared and `?` lines with each passage's `+` lines; a stale passage which
    was left wholly alone gives what it showed before. That content is checked in as any other.
 5. On a translation edge, a passage whose `+` lines are its `-` lines is stored as a hunk which
-   replaces lines by the same lines, so they are pending no longer. Such a hunk is kept by later
+   replaces lines by the same lines, so they are pending no longer; in the store it is a kept
+   hunk, which has no lines of its own. Such a hunk is kept by later
    check-ins, though the content would be the same without it, and is inherited like any other.
 6. A passage whose `-` lines were left out by one hunk, and whose `+` lines another hunk
    inserts beside them, becomes one hunk which replaces them, provided that changes neither
@@ -234,7 +237,8 @@ at the point checked out, and by its line in the plain document elsewhere.
 
 An axis of kind `git` takes its values from a repository. `sync` reads the tags which the
 axis's pattern takes. Each tag's commit becomes a value: its name is the first twelve digits of
-the commit's hash, and the tag is its label, by which it is shown and may be named. Its parent
+the commit's hash, or the whole hash where a value of the store has those twelve for its name
+already, and the tag is its label, by which it is shown and may be named. Its parent
 is the nearest value whose commit is an ancestor of it, or the axis's root. If two such values
 are nearest, neither an ancestor of the other, the sync is refused (`↯/o.7.2`), and the tag is
 given its parent by hand. Where the root has a commit, a tag of a commit which is not descended
@@ -247,7 +251,10 @@ branch's name is put beneath it. So what was checked in on the branch since the 
 what was released; anything checked in after the tag was made, and before the sync, is part of
 it too, and the sync says so.
 
-A sync adds values and renames one; by invariant 6 it changes no content.
+A sync adds values and renames one; by invariant 6 it changes no content. The renamed value's
+directory is renamed wherever it is: within the directory of each point, on the earlier axes,
+at which something is stored at the value. A branch whose name a value of another axis has is
+not tracked (`↯/o.2.6`), since no two values of a store have one name.
 
 ## A sourced axis
 
@@ -320,7 +327,7 @@ Two details of the invariants as tested:
 - Keeping an author's hunk boundaries from an indirect check-in; boundaries come from the diff,
   which pairs paragraphs where blank lines align.
 - Views against a point other than the storage parent.
-- Renames of documents; a count-and-hash encoding of anchors; a git merge driver.
+- Renames of documents; a git merge driver.
 - Re-parenting a value when a tag appears between two values which a sync has already made.
 - On a sourced axis: lineage over the true history of commits, where a commit has two parents;
   and following a document which the source renames.
@@ -333,9 +340,9 @@ Every error Orthant raises has a bolt code with the letter `o`.
 | Code | Meaning |
 |---|---|
 | `↯/o.1.1` | a delta file's header is missing or malformed |
-| `↯/o.1.2` | a line of a delta file has no sigil |
-| `↯/o.1.3` | the lines of a hunk are out of order |
-| `↯/o.1.4` | a delta file is of a later format version |
+| `↯/o.1.2` | a line of a delta file has no sigil, or its anchor line is not written as one |
+| `↯/o.1.3` | the lines of a hunk are out of order, or it has not exactly one anchor line |
+| `↯/o.1.4` | a delta file is of another format version |
 | `↯/o.1.5` | the store holds both a base and a delta for a document at a point |
 | `↯/o.1.6` | a delta's header names an axis which is not its point's storage axis |
 | `↯/o.1.7` | a directory of the store's data does not name a point |
@@ -346,7 +353,7 @@ Every error Orthant raises has a bolt code with the letter `o`.
 | `↯/o.2.3` | a value's parents form a cycle |
 | `↯/o.2.4` | a name is not valid for an axis or a value |
 | `↯/o.2.5` | the axis already exists |
-| `↯/o.2.6` | the axis already has the value |
+| `↯/o.2.6` | an axis of the store already has the value |
 | `↯/o.2.7` | a value given alone is on more than one axis |
 | `↯/o.2.8` | no axis has the value, or there is no such axis |
 | `↯/o.2.9` | hunks are stored on the axis, so what it prefers cannot change |

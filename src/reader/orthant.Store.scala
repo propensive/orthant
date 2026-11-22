@@ -126,29 +126,20 @@ object Store:
 
   def text(lines: List[Text]): Text = lines.map { line => t"$line\n" }.join
 
-  // The name of the directory which holds a point's records.
+  // The directory which holds a point's records, beneath the store's data: a directory for each
+  // axis on which the point is not at the root, in the order of the axes, each within the one
+  // before, and `_` within the last. A value's name is written with `_` for each `/`, and no
+  // name has a `_`, so `_` is no value's directory.
+  final val records: Text = t"_"
+
+  def folded(value: Text): Text = value.cut(t"/").join(t"_")
+  def unfolded(name: Text): Text = name.cut(t"_").join(t"/")
+
   def name(space: Space, point: Point): Text =
-    val pairs = space.axes.filter { axis => point(axis) != axis.root }.map: axis =>
-      t"${axis.name}=${point(axis).cut(t"/").join(t"_")}"
+    val values = space.axes.filter { axis => point(axis) != axis.root }.map: axis =>
+      folded(point(axis))
 
-    if pairs.nil then t"root" else pairs.join(t",")
-
-  def point(space: Space, name: Text): Point raises Error =
-    def invalid: Nothing = abort(Error(Reason.Folder(name)))
-
-    // A pair gives a value other than the root, so a point which is no longer at an axis's root
-    // has already had its value there from an earlier pair: no axis is named twice.
-    if name == t"root" then space.root else name.cut(t",").fold(space.root): (point, pair) =>
-      pair.cut(t"=") match
-        case axis :: value :: Nil =>
-          val found = space.axes.filter(_.name == axis).head.or(invalid)
-          val value2 = value.cut(t"_").join(t"/")
-          if !found.has(value2) || value2 == found.root then invalid
-          if point(found) != found.root then invalid
-          point.move(found, value2)
-
-        case _ =>
-          invalid
+    (values + List(records)).join(t"/")
 
   // Whether a value may have this name; an axis may, if it has no `/` besides.
   def valid(name: Text): Boolean = name match
@@ -182,27 +173,33 @@ object Store:
     if !text.starts(t"\ufeff") then text
     else abort(Error(Reason.Access(file, t"it begins with a byte order mark")))
 
-  // The configuration, which is refused unless it is all that §6.2 and §7 of the specification
-  // require: nothing is made of one which is not.
-  private[orthant] def configuration[source: Perusable](home: source): Settings raises Error =
+  // The configuration as it is written, of whatever version: nothing is asked of it but that it
+  // has the structure of one.
+  private[orthant] def written[source: Perusable](home: source): Settings raises Error =
     val file = t"${source.name(home)}/$config"
     val missing = Error(Reason.Missing(source.name(home)))
     val text = decode(file, source.data(home, config).or(abort(missing)))
 
-    val settings: Settings =
-      mitigate:
-        case error: Tel.Error => Error(Reason.Config(Orthant.prose(error)))
+    mitigate:
+      case error: Tel.Error => Error(Reason.Config(Orthant.prose(error)))
 
-      . protect(text.read[Settings in Tel])
+    . protect(text.read[Settings in Tel])
 
+  // The configuration, which is refused unless it is all that §6.2 and §7 of the specification
+  // require: nothing is made of one which is not.
+  private[orthant] def configuration[source: Perusable](home: source): Settings raises Error =
+    checked(written(home))
+
+  private[orthant] def checked(settings: Settings): Settings raises Error =
     def refuse(detail: Text): Nothing = abort(Error(Reason.Config(detail)))
 
     // A store of another version is not read for what can be made of it.
-    if settings.format != Settings.format && settings.format != Settings.sourced
-    then refuse(t"the store is of format ${settings.format}, and not ${Settings.format}")
+    if settings.format == Settings.legacy then
+      val (old, later) = (Settings.legacy, Settings.format)
+      refuse(t"the store is of format $old; `orthant migrate` makes it one of format $later")
 
-    if settings.format == Settings.format then settings.axis.filter(_.source.present).each: entry =>
-      refuse(t"the axis ${entry.name} has a source, which a store of format 1 cannot have")
+    if settings.format != Settings.format
+    then refuse(t"the store is of format ${settings.format}, and not ${Settings.format}")
 
     // A name which two axes had, or two values of an axis, would name neither.
     def twice(names: List[Text]): Optional[Text] =
@@ -228,6 +225,12 @@ object Store:
       entry.value.each: value =>
         if !valid(value.name)
         then refuse(t"${value.name} is not a valid name for a value of the axis $axis")
+
+    // A value's name alone is its directory's, whichever axis it is of, so no two axes have a
+    // value of one name.
+    twice(settings.axis.bind(_.value.map(_.name))).let: name =>
+      val axes = settings.axis.filter(_.value.exists(_.name == name)).map(_.name).join(t" and ")
+      refuse(t"the axes $axes each have a value named $name")
 
     // A sourced axis is the last, so that nothing is ever derived along it; each of its values
     // is a commit, which never moves.
@@ -316,47 +319,68 @@ object Store:
       entries(directory, Perusable.Kind.File).map { name => t"$prefix$name" } + deeper
 
     type State = (Map[Text, Dossier], List[Error])
-    val folders = entries(data, Perusable.Kind.Directory).order: name => name
 
-    val (dossiers, faults) = folders.fold((Map(), Nil): State): (state, name) =>
-      attempt(point(space, name)) match
-        case error: Error =>
-          (state(0), error :: state(1))
+    // The records of a point, which are the files beneath its `_`.
+    def hold(state: State, point: Point, folder: Text): State =
+      files(folder, t"").order { file => file }.fold(state): (state, file) =>
+        val (dossiers, faults) = state
+        val path = t"$folder/$file"
+        val shown = t"$base/$path"
+        val delta = point != space.root && file.ends(t".delta")
+        val document = if delta then file.keep(file.length - 6) else file
+        val dossier = dossiers.at(document).or(fresh(document))
 
-        case point: Point =>
-          files(t"$data/$name", t"").order { file => file }.fold(state): (state, file) =>
-            val (dossiers, faults) = state
-            val path = t"$data/$name/$file"
-            val shown = t"$base/$path"
-            val delta = point != space.root && file.ends(t".delta")
-            val document = if delta then file.keep(file.length - 6) else file
-            val dossier = dossiers.at(document).or(fresh(document))
+        val folio: Folio | Error = attempt:
+          val gone = Error(Reason.Access(shown, t"it is no longer there"))
+          val content = lines(decode(shown, source.data(home, path).or(abort(gone))))
+          if dossier.folios.defines(point) then abort(Error(Reason.Both(shown)))
+          if space.source(point) then abort(Error(Reason.Sourced(shown)))
 
-            val folio: Folio | Error = attempt:
-              val gone = Error(Reason.Access(shown, t"it is no longer there"))
-              val content = lines(decode(shown, source.data(home, path).or(abort(gone))))
-              if dossier.folios.defines(point) then abort(Error(Reason.Both(shown)))
-              if space.source(point) then abort(Error(Reason.Sourced(shown)))
+          if !delta then Folio.Base(content) else
+            val folio = parse(shown, content)
 
-              if !delta then Folio.Base(content) else
-                val folio = parse(shown, content)
+            val axis = folio match
+              case Folio.Delta(axis, _) => axis
+              case Folio.Absent(axis)   => axis
+              case _                    => t""
 
-                val axis = folio match
-                  case Folio.Delta(axis, _) => axis
-                  case Folio.Absent(axis)   => axis
-                  case _                    => t""
+            if space.storageAxis(point).let(_.name) != axis
+            then abort(Error(Reason.Storage(shown, axis)))
 
-                if space.storageAxis(point).let(_.name) != axis
-                then abort(Error(Reason.Storage(shown, axis)))
+            folio
 
-                folio
+        folio match
+          case error: Error =>
+            (dossiers, error :: faults)
 
-            folio match
-              case error: Error =>
-                (dossiers, error :: faults)
+          case folio: Folio =>
+            (dossiers.define(document, dossier.hold(point, folio)), faults)
 
-              case folio: Folio =>
-                (dossiers.define(document, dossier.hold(point, folio)), faults)
+    // The first of the axes which has a value, other than as its root, and the axes after it.
+    def owner(axes: List[Axis], value: Text): Optional[(Axis, List[Axis])] = axes match
+      case axis :: later =>
+        if axis.has(value) && value != axis.root then (axis, later) else owner(later, value)
+
+      case _ =>
+        Unset
+
+    // A directory of a point has its records in `_`, and a directory besides for each value at
+    // which a point within it is: a value of an axis which comes after every axis that a
+    // directory above has named. Nothing is read from beneath a directory which names no such
+    // value.
+    def walk(state: State, directory: Text, within: Text, point: Point, axes: List[Axis]): State =
+      entries(directory, Perusable.Kind.Directory).order { name => name }.fold(state):
+        (state, name) =>
+          val path = t"$directory/$name"
+
+          val value = unfolded(name)
+          def unnamed: State = (state(0), Error(Reason.Folder(t"$within$name")) :: state(1))
+
+          if name == records then hold(state, point, path) else
+            owner(axes, value).lay(unnamed): (axis, later) =>
+              walk(state, path, t"$within$name/", point.move(axis, value), later)
+
+    val (dossiers, faults) = walk((Map(), Nil), data, t"", space.root, space.axes)
 
     new Store(settings, space, dossiers, faults.reverse, upstream)
 
@@ -416,6 +440,9 @@ class Store
     dossiers.at(document).or(Dossier(space, Map(), Store.source(settings, upstream, document)))
 
   def name(point: Point): Text = Store.name(space, point)
+
+  // The axis which has a value of this name: no two do.
+  def owner(value: Text): Optional[Axis] = space.axes.filter(_.has(value)).head
 
   // The point which `from` becomes when moved to each value a term names, in turn: a term is
   // `axis=value`, or a value alone where one axis has it.

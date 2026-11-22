@@ -103,7 +103,7 @@ object Sourcing:
 
       nearest match
         case parent :: Nil =>
-          val name = if entry.value.exists(_.name == short(hash)) then hash else short(hash)
+          val name = store.hashed(hash)
 
           val values = entry.value.map: value =>
             val beneath =

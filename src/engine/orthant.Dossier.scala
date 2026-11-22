@@ -53,6 +53,16 @@ case class Dossier
 
     result
 
+  // The hunks which are stored at a point, each with the lines of its anchor: those whose
+  // anchors are found, once, in the content of the point's storage parent.
+  def hunks(point: Point): List[Hunk] raises Axis.Error =
+    val parent = space.storageParent(point).let(rendition(_)).let(_.content)
+
+    folios.at(point).let(_.only { case Folio.Delta(_, hunks) => hunks }).or(Nil).bind: hunk =>
+      parent.lay(List[Hunk]()): content =>
+        val start = Rebase.locate(hunk, content)
+        if start < 0 then Nil else List(hunk.open(content, start))
+
   // The content of the document at a point, or `Unset` if it does not exist there.
   def content(point: Point): Optional[List[Text]] raises Axis.Error = rendition(point).let(_.lines)
 
@@ -103,7 +113,7 @@ case class Dossier
 
       def render(deltas: List[Point], reference: Content): Rendition =
         val placed: List[Placement | Issue] = deltas.bind: origin =>
-          val hunks: List[Hunk] =
+          val hunks: List[Sealed] =
             folios.at(origin).let(_.only { case Folio.Delta(_, hunks) => hunks }).or(Nil)
 
           val source: Optional[Content] =
@@ -111,11 +121,12 @@ case class Dossier
             else space.storageParent(origin).let(rendition(_)).let(_.content)
 
           source.lay(List[Placement | Issue]()): source =>
+            // A hunk whose anchor is found has the lines of it from where it was found.
             val located: List[(Int, Hunk) | Issue] = hunks.map: hunk =>
               Rebase.locate(hunk, source) match
                 case Content.Absent  => Issue.Orphan(origin, hunk)
                 case Content.Several => Issue.Ambiguous(origin, hunk)
-                case start           => (start, hunk)
+                case start           => (start, hunk.open(source, start))
 
             val outcomes: List[Rebase.Outcome] =
               val found = located.sweep { case pair: (Int, Hunk) @unchecked => pair }
@@ -265,7 +276,9 @@ case class Dossier
         delta.rendition(point).lay(retain(point, Folio.Base(lines))): rendition =>
           val keep = axis.preference == Preference.Own
           val hunks = Inscription.hunks(rendition, lines, point, keep)
-          def held(hunks: List[Hunk]): Dossier = retain(point, Folio.Delta(axis.name, hunks))
+
+          def held(hunks: List[Hunk]): Dossier =
+            retain(point, Folio.Delta(axis.name, hunks.map(_.seal)))
 
           val whole = held(hunks)
           val issues = whole.issues(point).size
@@ -540,7 +553,7 @@ case class Dossier
           . map: placement => (placement.start, placement.hunk)
 
         val hunks = (kept + checked).order { (start, hunk) => hunk.rank(start) }.map(_(1))
-        if stale.nil then this else retain(point, Folio.Delta(axis.name, hunks))
+        if stale.nil then this else retain(point, Folio.Delta(axis.name, hunks.map(_.seal)))
 
   // Whether the point's content is a translation of its storage parent's.
   def translation(point: Point): Boolean raises Axis.Error =
@@ -595,7 +608,7 @@ case class Dossier
             (start, Inscription.anchor(Hunk(same, same), start, rendition.base))
 
           val hunks = (kept + added).order { (start, hunk) => hunk.rank(start) }.map(_(1))
-          retain(point, Folio.Delta(axis.name, hunks))
+          retain(point, Folio.Delta(axis.name, hunks.map(_.seal)))
 
   // The dossier in which a hunk stored at `point` which only takes out the lines `start` to
   // `end` of its storage parent's content, and one stored there which only puts lines in at
@@ -643,7 +656,7 @@ case class Dossier
                   List((taking.start, Inscription.anchor(whole, taking.start, rendition.base)))
 
               val ordered = hunks.order { (start, hunk) => hunk.rank(start) }.map(_(1))
-              val united = dossier.retain(point, Folio.Delta(axis.name, ordered))
+              val united = dossier.retain(point, Folio.Delta(axis.name, ordered.map(_.seal)))
               if !check || same(united, dossier) then united else dossier
 
     // Every span is united, and the points are derived once to see that nothing has changed;
@@ -695,9 +708,13 @@ case class Dossier
           former.rendition(parent).let(_.content).lay(this): old =>
             rendition(parent).let(_.content).lay(this): next =>
               if old.lines == next.lines then this else
-                val places: List[(Int, Hunk)] = hunks.map: hunk => (Rebase.locate(hunk, old), hunk)
-                val located: List[(Int, Hunk)] = places.filter(_(0) >= 0)
-                val unlocated: List[Hunk] = places.filter(_(0) < 0).map(_(1))
+                val places: List[(Int, Sealed)] =
+                  hunks.map: hunk => (Rebase.locate(hunk, old), hunk)
+
+                val located: List[(Int, Hunk)] =
+                  places.filter(_(0) >= 0).map: (start, hunk) => (start, hunk.open(old, start))
+
+                val unlocated: List[Sealed] = places.filter(_(0) < 0).map(_(1))
 
                 val moved: List[(Int, Hunk)] = Rebase(located, old, next).sweep:
                   case Rebase.Outcome.Fresh(start, hunk) =>
@@ -711,7 +728,7 @@ case class Dossier
                     (start, Inscription.anchor(hunk, start, next))
 
                 val ordered = moved.order { (start, hunk) => hunk.rank(start) }.map(_(1))
-                retain(point, Folio.Delta(axis, ordered + unlocated))
+                retain(point, Folio.Delta(axis, ordered.map(_.seal) + unlocated))
 
         case _ =>
           this

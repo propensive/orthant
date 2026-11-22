@@ -89,6 +89,24 @@ object Tests extends Suite(m"Orthant tests"):
     suite(m"Delta files"):
       val text: List[Text] =
         List
+          ( t"orthant 2 language",
+            t"",
+            t"@ 0 1 0 1739b4b7994a5f420f8267a428e7b74a",
+            t"+ Installez l'outil.",
+            t"",
+            t"! Run it.",
+            t"@ 0 1 0 1a2ba4db36f8250a0d0fe99450a6da37",
+            t"+ Lancez-le.",
+            t"",
+            t"^",
+            t"@ 2 1 1 1eb680ecbdae02af041db5461c851478",
+            t"$$",
+            t"+ Ouvrez le fichier .dmg.",
+            t"+" )
+
+      // The same record, as a delta file of the version before held it.
+      val former: List[Text] =
+        List
           ( t"orthant 1 language",
             t"",
             t"- Install the tool.",
@@ -114,41 +132,101 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == (t"language", 3, List(false, true, false)))
 
-      test(m"Context, document ends and empty lines are read"):
+      test(m"An anchor, document ends and empty lines are read"):
         Delta.parse(text) match
           case Folio.Delta(_, hunks) => hunks.last
           case _                     => Unset
 
       . assert: hunk =>
-          hunk ==
-            Hunk
-              ( List(t"Run the installer."), List(t"Ouvrez le fichier .dmg.", t""),
-                List(t"## macOS", t""), List(t"Last line."), Nil, true, true )
+          val anchor = Imprint.of(List(t"## macOS", t"", t"Run the installer.", t"Last line."))
+          hunk == Sealed(2, 1, 1, anchor, List(t"Ouvrez le fichier .dmg.", t""), Nil, true, true)
 
       test(m"Writing a parsed delta file reproduces it"):
         Delta.serialize(Delta.parse(text))
 
       . assert(_ == text)
 
-      test(m"An absent record is one header line"):
-        Delta.serialize(Delta.parse(List(t"orthant 1 release absent")))
+      test(m"A delta file of the version before is read as the same record"):
+        (Delta.upgrade(former) == Delta.parse(text), safely(Delta.parse(former)).absent)
 
-      . assert(_ == List(t"orthant 1 release absent"))
+      . assert(_ == (true, true))
+
+      test(m"The digest of a run of lines is as the specification defines it"):
+        ( Imprint.of(List(t"Install the tool.")).text, Imprint.of(List(t"Same.", t"")).text,
+          Imprint.of(Nil).text, Imprint.of(List(t"Install the tool.", t"Run it.")).text )
+
+      . assert: imprints =>
+          imprints ==
+            ( t"1739b4b7994a5f420f8267a428e7b74a", t"04a4d873e18cea8d15af48a5d82876d8",
+              t"00000000000000000000000000000000", t"08925bd35237d6df0001b530ebcb7ed3" )
+
+      test(m"The digest of each run of a content is that of its lines"):
+        val lines = List(t"## macOS", t"", t"Run the installer.", t"", t"Last line.", t"été")
+        val content = orthant.Content(lines)
+
+        List.range(0, 7).bind { from => List.range(from, 7).map((from, _)) }.filter: (from, to) =>
+          content.imprint(from, to) != Imprint.of(lines.excerpt(from, to))
+
+      . assert(_ == Nil)
+
+      test(m"A run is found by its digest where it occurs once"):
+        val content = orthant.Content(List(t"a", t"b", t"a", t"b", t"c"))
+        def find(lines: Text*): Int = content.find(lines.size, Imprint.of(lines.to(List)))
+
+        ( find(t"a", t"b"), find(t"b", t"c"), find(t"c", t"a"), find(t"b", t"a"),
+          content.find(2, Imprint.of(List(t"a", t"b")), start = true),
+          content.find(1, Imprint.of(List(t"b")), end = true) )
+
+      . assert: result =>
+          val (several, absent) = (orthant.Content.Several, orthant.Content.Absent)
+          result == (several, 3, absent, 1, 0, absent)
+
+      test(m"An absent record is one header line"):
+        Delta.serialize(Delta.parse(List(t"orthant 2 release absent")))
+
+      . assert(_ == List(t"orthant 2 release absent"))
 
       test(m"A conflict marker is not read as content"):
-        safely(Delta.parse(List(t"orthant 1 language", t"", t"<<<<<<< HEAD"))).absent
-
-      . assert(_ == true)
-
-      test(m"A replaced line after a new line is out of order"):
-        safely(Delta.parse(List(t"orthant 1 language", t"", t"+ a", t"- b"))).absent
+        safely(Delta.parse(List(t"orthant 2 language", t"", t"<<<<<<< HEAD"))).absent
 
       . assert(_ == true)
 
       test(m"A later format version is refused"):
-        safely(Delta.parse(List(t"orthant 2 language"))).absent
+        safely(Delta.parse(List(t"orthant 3 language"))).absent
 
       . assert(_ == true)
+
+      val same = List(t"Same.", t"")
+      val kept = Hunk(same, same, List(t"Before."), Nil, List(t"Old."))
+
+      test(m"A hunk which puts back the lines it replaces is kept, and has no lines of its own"):
+        val record: Folio.Delta = Folio.Delta(t"language", List(kept.seal))
+        (Delta.serialize(record), Delta.parse(Delta.serialize(record)) == record)
+
+      . assert: result =>
+          val anchor = Imprint.of(List(t"Before.", t"Same.", t"")).text
+          result == (List(t"orthant 2 language", t"", t"! Old.", t"% 1 2 0 $anchor"), true)
+
+      test(m"A kept hunk is opened with the lines it replaces as its own"):
+        val content = orthant.Content(List(t"Before.", t"Same.", t"", t"After."))
+        val start = Rebase.locate(kept.seal, content)
+        (start, kept.seal.open(content, start) == kept)
+
+      . assert(_ == (1, true))
+
+      test(m"A hunk has one anchor, written as it must be, and a kept hunk has no new lines"):
+        val anchor = t"1739b4b7994a5f420f8267a428e7b74a"
+
+        def refused(lines: Text*): Boolean =
+          safely(Delta.parse(List(t"orthant 2 language", t"") + lines.to(List))).absent
+
+        ( refused(t"+ a"), refused(t"! a"), refused(t"+ a", t"@ 0 1 0 $anchor"),
+          refused(t"@ 0 1 0 $anchor", t"@ 0 1 0 $anchor"), refused(t"% 0 1 0 $anchor", t"+ a"),
+          refused(t"@ 0 1 $anchor"), refused(t"@ 0 01 0 $anchor"), refused(t"@ 0 1 0 XYZ"),
+          refused(t"@ 0 1 0 ${anchor.upper}"), refused(t"- a", t"+ b"),
+          refused(t"^", t"! a", t"@ 0 1 0 $anchor", t"$$", t"+ a", t"+") )
+
+      . assert(_ == (true, true, true, true, true, true, true, true, true, true, false))
 
     suite(m"The cascade"):
       val language =
@@ -205,7 +283,7 @@ object Tests extends Suite(m"Orthant tests"):
           folio ==
             Folio.Delta
               ( t"release",
-                List(Hunk(List(t"that is the question."), List(t"that is the query."))) )
+                List(Hunk(List(t"that is the question."), List(t"that is the query.")).seal) )
 
       test(m"A later release inherits the change"):
         second.content(at(t"en/GB", t"v3"))
@@ -214,8 +292,8 @@ object Tests extends Suite(m"Orthant tests"):
 
       test(m"A translation is one hunk for each paragraph"):
         third.folios.at(at(t"fr/FR", t"v1")) match
-          case Folio.Delta(axis, hunks) => (axis, hunks.map(_.replaced))
-          case _                        => (t"", Nil)
+          case Folio.Delta(axis, _) => (axis, third.hunks(at(t"fr/FR", t"v1")).map(_.replaced))
+          case _                    => (t"", Nil)
 
       . assert(_ == (t"language", List(List(be), List(question), List(exit))))
 
@@ -240,9 +318,7 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ == quebec)
 
       test(m"A dialect stores only the line it alters"):
-        fourth.folios.at(at(t"fr/CA", t"v1")) match
-          case Folio.Delta(axis, hunks) => hunks.map(_.replaced)
-          case _                        => Nil
+        fourth.hunks(at(t"fr/CA", t"v1")).map(_.replaced)
 
       . assert(_ == List(List(telle)))
 
@@ -269,12 +345,7 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ == (french, 0))
 
       test(m"The new translation is stored as one hunk at the release"):
-        fifth.folios.at(at(t"fr/FR", t"v2")) match
-          case Folio.Delta(axis, hunks) =>
-            hunks.map: hunk => (hunk.former, hunk.replaced, hunk.lines)
-
-          case _ =>
-            Nil
+        fifth.hunks(at(t"fr/FR", t"v2")).map: hunk => (hunk.former, hunk.replaced, hunk.lines)
 
       . assert(_ == List((List(question), List(query), List(requete))))
 
@@ -732,9 +803,7 @@ object Tests extends Suite(m"Orthant tests"):
         . checkin(fr1, List(linux, lancez, macos, ouvrez))
 
       test(m"A hunk on a repeated line is anchored by the line before it"):
-        installers.folios.at(fr1) match
-          case Folio.Delta(_, hunks) => hunks.map(_.before)
-          case _                     => Nil
+        installers.hunks(fr1).map(_.before)
 
       . assert(_ == List(List(linux), List(macos)))
 
@@ -919,21 +988,24 @@ object Tests extends Suite(m"Orthant tests"):
       test(m"A point's directory names its values which are not roots"):
         val store = fixture()
         val point = store.locate(store.space.root, List(t"fr/CA", t"release=v2"))
-        (store.name(point), Store.point(store.space, store.name(point)) == point)
+        (store.name(point), store.name(store.locate(store.space.root, List(t"v2"))))
 
-      . assert(_ == (t"language=fr_CA,release=v2", true))
+      . assert(_ == (t"fr_CA/v2/_", t"v2/_"))
 
-      test(m"The root point's directory is root"):
+      test(m"The root point's records are in the first directory of all"):
         val store = fixture()
         store.name(store.space.root)
 
-      . assert(_ == t"root")
+      . assert(_ == t"_")
 
-      test(m"A value on two axes must name its axis"):
-        val store = fixture().axis(t"edition", t"v2", t"custom")
-        code(store.locate(store.space.root, List(t"v2")))
+      test(m"A value which another axis has is refused, as an axis's first value or a later one"):
+        val store = fixture()
 
-      . assert(_ == t"↯/o.2.7")
+        ( code(store.axis(t"edition", t"v2", t"custom")),
+          code(store.value(t"release", t"fr", Unset)),
+          code(store.value(t"release", t"en", Unset)) )
+
+      . assert(_ == (t"↯/o.2.6", t"↯/o.2.6", t"↯/o.2.6"))
 
       test(m"The configuration is read back as it was written"):
         val store = fixture()
@@ -948,9 +1020,9 @@ object Tests extends Suite(m"Orthant tests"):
       . assert: files =>
           files ==
             List
-              ( t"language=fr/guide/intro.md.delta",
-                t"release=v2/guide/intro.md.delta",
-                t"root/guide/intro.md" )
+              ( t"_/guide/intro.md",
+                t"fr/_/guide/intro.md.delta",
+                t"v2/_/guide/intro.md.delta" )
 
       test(m"A reloaded store gives each point its content"):
         val store = populated()
@@ -1074,7 +1146,7 @@ object Tests extends Suite(m"Orthant tests"):
 
       test(m"A conflict marker in a delta is a fault with the delta format's code"):
         val store = populated()
-        val file = t"${store.data}/release=v2/guide/intro.md.delta"
+        val file = t"${store.data}/v2/_/guide/intro.md.delta"
         Disk.write(file, t"${Disk.read(file).or(t"")}<<<<<<< HEAD\n", store.staging)
         Workspace.scan(store.root)(1).map(_.bolt.text)
 
@@ -1082,31 +1154,73 @@ object Tests extends Suite(m"Orthant tests"):
 
       test(m"A base and a delta for one document at one point is a fault"):
         val store = populated()
-        Disk.write(t"${store.data}/release=v2/guide/intro.md", t"Both.\n", store.staging)
+        Disk.write(t"${store.data}/v2/_/guide/intro.md", t"Both.\n", store.staging)
         Workspace.scan(store.root)(1).map(_.bolt.text)
 
       . assert(_ == List(t"↯/o.1.5"))
 
       test(m"A directory which names no point is a fault"):
         val store = populated()
-        Disk.write(t"${store.data}/language=de/guide/intro.md", t"Hallo.\n", store.staging)
+        Disk.write(t"${store.data}/de/_/guide/intro.md", t"Hallo.\n", store.staging)
         Workspace.scan(store.root)(1).map(_.bolt.text)
 
       . assert(_ == List(t"↯/o.1.7"))
 
-      test(m"A directory which names an axis twice is a fault"):
+      test(m"A directory which names an axis twice, or out of order, or at its root, is a fault"):
+        def stray(folder: Text): List[Text] =
+          val store = populated()
+          Disk.write(t"${store.data}/$folder/_/guide/other.md", t"Bonjour.\n", store.staging)
+          Workspace.scan(store.root)(1).map(_.bolt.text)
+
+        (stray(t"fr/fr_CA"), stray(t"v2/fr"), stray(t"en"), stray(t"fr/v1"), stray(t"fr/v2"))
+
+      . assert: result =>
+          val fault = List(t"↯/o.1.7")
+          result == (fault, fault, fault, fault, Nil)
+
+      test(m"A file beside a point's records is no record, and a document may be named as a value"):
         val store = populated()
-        val folder = t"${store.data}/language=fr,language=fr"
-        Disk.write(t"$folder/guide/other.md", t"Bonjour.\n", store.staging)
-        Workspace.scan(store.root)(1).map(_.bolt.text)
+        Disk.write(t"${store.data}/fr/notes.md", t"Stray.\n", store.staging)
+        Disk.write(t"${store.data}/fr/_/v2/fr.md", t"Bonjour.\n", store.staging)
+        val (read, faults) = Workspace.scan(store.root)
+        val french = read.locate(read.space.root, List(t"fr"))
+        (read.documents, read.content(t"v2/fr.md", french), faults.size)
 
-      . assert(_ == List(t"↯/o.1.7"))
+      . assert(_ == (List(t"guide/intro.md", t"v2/fr.md"), List(t"Bonjour."), 0))
+
+      test(m"A point which loses its last record keeps the points within its directory"):
+        val store = populated()
+        Worktree.checkout(store, store.locate(store.space.root, List(t"fr", t"v2")), false)
+        edit(store, t"guide/intro.md", t"Installez-le.\n\nLancez-le maintenant.\n")
+        Worktree.checkin(store, Nil, false, false)
+        val deeper = Workspace.load(store.root)
+        val french = deeper.locate(deeper.space.root, List(t"fr"))
+        val before = Disk.files(store.data)
+        deeper.save(t"guide/intro.md", deeper.dossier(t"guide/intro.md").hold(french, Unset))
+
+        (before, Disk.files(store.data))
+
+      . assert: result =>
+          val kept =
+            List
+              ( t"_/guide/intro.md",
+                t"fr/v2/_/guide/intro.md.delta",
+                t"v2/_/guide/intro.md.delta" )
+
+          val held =
+            List
+              ( t"_/guide/intro.md",
+                t"fr/_/guide/intro.md.delta",
+                t"fr/v2/_/guide/intro.md.delta",
+                t"v2/_/guide/intro.md.delta" )
+
+          result == (held, kept)
 
       test(m"A store of a later format is refused"):
         val store = populated()
         val file = t"${store.folder}/config.tel"
         val later = Store.lines(Disk.read(file).or(t"")).map: line =>
-          if line == t"format 1" then t"format 3" else line
+          if line == t"format 2" then t"format 3" else line
 
         Disk.write(file, Store.text(later), store.staging)
         code(Workspace.scan(store.root))
@@ -1133,16 +1247,26 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == t"↯/o.5.1")
 
+      test(m"A value of one name on two axes is refused"):
+        val store = populated()
+        val file = t"${store.folder}/config.tel"
+        val lines = Store.lines(Disk.read(file).or(t""))
+        val axis = List(t"axis", t"  name edition", t"  kind custom", t"  prefer own")
+        Disk.write(file, Store.text(lines + axis + List(t"  value", t"    name v2")), store.staging)
+        code(Workspace.scan(store.root))
+
+      . assert(_ == t"↯/o.5.1")
+
       test(m"A delta whose lines are not in its parent is a fault"):
         val store = populated()
-        Disk.write(t"${store.data}/root/guide/intro.md", t"Something else.\n", store.staging)
+        Disk.write(t"${store.data}/_/guide/intro.md", t"Something else.\n", store.staging)
         Workspace.scan(store.root)(1).map(_.bolt.text).distinct
 
       . assert(_ == List(t"↯/o.1.8"))
 
       test(m"A hunk with no place is found where its document is read or changed, not before"):
         val made = populated()
-        Disk.write(t"${made.data}/root/guide/intro.md", t"Something else.\n", made.staging)
+        Disk.write(t"${made.data}/_/guide/intro.md", t"Something else.\n", made.staging)
         val store = Workspace.open(made.root)
         val root = store.space.root
         val french = store.locate(root, List(t"fr"))
@@ -1334,7 +1458,7 @@ object Tests extends Suite(m"Orthant tests"):
       test(m"An update carries edits onto a store which changed beneath the working tree"):
         val store = populated()
         edit(store, t"guide/intro.md", t"Install it please.\n\nRun it now.\n")
-        val held = t"${store.data}/root/guide/intro.md"
+        val held = t"${store.data}/_/guide/intro.md"
         Disk.write(held, t"Install it.\n\nRun it.\n\nMore.\n", store.staging)
         val moved = Workspace.load(store.root)
         val refused = code(Worktree.checkin(moved, Nil, false, false))
@@ -1355,7 +1479,7 @@ object Tests extends Suite(m"Orthant tests"):
         edit(store, t"notes.md", t"Install it.\n\nRun it.\n")
         Worktree.checkin(store, Nil, false, false)
         edit(store, t"notes.md", t"Install it please.\n\nRun it.\n")
-        Disk.write(t"${store.data}/root/notes.md", t"Install them.\n\nRun it.\n", store.staging)
+        Disk.write(t"${store.data}/_/notes.md", t"Install them.\n\nRun it.\n", store.staging)
         code(Worktree.update(Workspace.load(store.root)))
 
       . assert(_ == t"↯/o.4.12")
@@ -1406,7 +1530,7 @@ object Tests extends Suite(m"Orthant tests"):
         tally.effects.filter(_.pending != 0).map: effect =>
           (store.name(effect.point), effect.pending)
 
-      . assert(_ == List((t"language=fr", 2)))
+      . assert(_ == List((t"fr/_", 2)))
 
       test(m"The edits which are not checked in can be counted as if they were"):
         val store = fixture()
@@ -1475,7 +1599,7 @@ object Tests extends Suite(m"Orthant tests"):
       def config(prefer: Text = t"own", kind: Text = t"custom", second: Text = t"release"): Text =
         Store.text:
           List
-            ( t"format 1", t"tree docs", t"axis", t"  name language", t"  kind language",
+            ( t"format 2", t"tree docs", t"axis", t"  name language", t"  kind language",
               t"  prefer $prefer", t"  value", t"    name en", t"  value", t"    name fr",
               t"    parent en", t"    translation true", t"  value", t"    name fr/CA",
               t"    parent fr", t"axis", t"  name $second", t"  kind $kind", t"  prefer own",
@@ -1500,12 +1624,16 @@ object Tests extends Suite(m"Orthant tests"):
       val translated =
         List(t"Titre", t"", t"Installez l'outil.", t"Lancez-le.", t"", t"Last line.")
 
+      // A delta is written here as the version before had it, with the lines of its anchors,
+      // and is stored as this version has it.
+      def stored(delta: List[Text]): Text = Store.text(Delta.serialize(Delta.upgrade(delta)))
+
       def texts(settings: Text, delta: List[Text]): List[(Text, Text)] =
         List
           ( t".orthant/config.tel"                             -> settings,
-            t".orthant/data/root/guide/intro.md"               -> Store.text(base),
-            t".orthant/data/release=v2/guide/intro.md.delta"   -> Store.text(delta),
-            t".orthant/data/language=fr/guide/intro.md.delta"  -> Store.text(french) )
+            t".orthant/data/_/guide/intro.md"                  -> Store.text(base),
+            t".orthant/data/v2/_/guide/intro.md.delta"         -> stored(delta),
+            t".orthant/data/fr/_/guide/intro.md.delta"         -> stored(french) )
 
       // A file given in `more` takes the place of the example's own of that path.
       def example
@@ -1530,10 +1658,10 @@ object Tests extends Suite(m"Orthant tests"):
           t""
         catch case error: Store.Error => error.bolt.text
 
-      test(m"A store is opened from memory, and is of format 1"):
+      test(m"A store is opened from memory, and is of format 2"):
         Store.open(example()).format
 
-      . assert(_ == 1)
+      . assert(_ == 2)
 
       test(m"The axes are given in order, with what the configuration says of each"):
         val store = Store.open(example())
@@ -1558,17 +1686,14 @@ object Tests extends Suite(m"Orthant tests"):
         store.points.map(store.name(_))
 
       . assert: names =>
-          names ==
-            List
-              ( t"root", t"release=v2", t"language=fr", t"language=fr,release=v2",
-                t"language=fr_CA", t"language=fr_CA,release=v2" )
+          names == List(t"_", t"v2/_", t"fr/_", t"fr/v2/_", t"fr_CA/_", t"fr_CA/v2/_")
 
       test(m"A point is named by terms, each moving the last"):
         val store = Store.open(example())
         val first = store.point(List(t"fr", t"release=v2"))
         (store.name(first), store.name(store.point(List(t"language=en"), first)))
 
-      . assert(_ == (t"language=fr,release=v2", t"release=v2"))
+      . assert(_ == (t"fr/v2/_", t"v2/_"))
 
       test(m"A term which names no axis, or no value, fails"):
         val store = Store.open(example())
@@ -1635,7 +1760,7 @@ object Tests extends Suite(m"Orthant tests"):
         ( store.storageParent(point).let(store.name(_)), store.origins(point).map(store.name(_)),
           store.storageParent(store.point(Nil)), store.origins(store.point(List(t"v2"))).size )
 
-      . assert(_ == (t"release=v2", List(t"language=fr,release=v2", t"language=fr"), Unset, 1))
+      . assert(_ == (t"v2/_", List(t"fr/v2/_", t"fr/_"), Unset, 1))
 
       test(m"The work of the example is as the specification gives it"):
         val store = Store.open(example())
@@ -1672,13 +1797,13 @@ object Tests extends Suite(m"Orthant tests"):
 
       test(m"A file which begins with a byte order mark is not read"):
         val marked = bytes(t"\ufeff${Store.text(base)}")
-        code(Store.open(example(more = List(t".orthant/data/root/guide/intro.md" -> marked))))
+        code(Store.open(example(more = List(t".orthant/data/_/guide/intro.md" -> marked))))
 
       . assert(_ == t"↯/o.4.5")
 
       test(m"A file which is not UTF-8 is not read"):
         val broken: Data = Array.unsafeFrozen(scala.Array[Byte](72, -1, -2, 10))
-        code(Store.open(example(more = List(t".orthant/data/root/guide/intro.md" -> broken))))
+        code(Store.open(example(more = List(t".orthant/data/_/guide/intro.md" -> broken))))
 
       . assert(_ == t"↯/o.4.5")
 
@@ -1709,8 +1834,9 @@ object Tests extends Suite(m"Orthant tests"):
       test(m"Hidden entries are passed over at every depth"):
         val hidden =
           List
-            ( t".orthant/data/root/.draft.md"       -> bytes(t"Draft.\n"),
-              t".orthant/data/root/.cache/notes.md" -> bytes(t"Notes.\n"),
+            ( t".orthant/data/_/.draft.md"          -> bytes(t"Draft.\n"),
+              t".orthant/data/_/.cache/notes.md"    -> bytes(t"Notes.\n"),
+              t".orthant/data/fr/.v2/_/notes.md"    -> bytes(t"Notes.\n"),
               t".orthant/data/.git/HEAD"            -> bytes(t"ref\n") )
 
         val store = Store.open(example(more = hidden))
@@ -1719,7 +1845,7 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ == (List(intro), 0))
 
       test(m"A store with a directory which names no point is not opened, but is inspected"):
-        val stray = List(t".orthant/data/edition=v2/guide/intro.md" -> bytes(t"Stray.\n"))
+        val stray = List(t".orthant/data/v9/_/guide/intro.md" -> bytes(t"Stray.\n"))
         val store = Store.inspect(example(more = stray))
 
         ( code(Store.open(example(more = stray))), store.faults.map(_.bolt.text),
@@ -1745,8 +1871,8 @@ object Tests extends Suite(m"Orthant tests"):
 
       test(m"A symbolic link in a store is passed over"):
         val root = disk()
-        val link = java.nio.file.Path.of(t"$root/.orthant/data/root/guide/link.md".s).nn
-        val target = java.nio.file.Path.of(t"$root/.orthant/data/root/guide/intro.md".s).nn
+        val link = java.nio.file.Path.of(t"$root/.orthant/data/_/guide/link.md".s).nn
+        val target = java.nio.file.Path.of(t"$root/.orthant/data/_/guide/intro.md".s).nn
         java.nio.file.Files.createSymbolicLink(link, target)
         Store.open(Disk.path(root)).documents
 
@@ -1758,6 +1884,95 @@ object Tests extends Suite(m"Orthant tests"):
         Store.find(Disk.path(t"$root/docs/guide")).encode == root
 
       . assert(_ == true)
+
+      // The example as a store of format 1 held it, with a record besides at a point which is
+      // at no root, in a directory whose pairs are not in the order of the axes.
+      def legacy(settings: Text = config()): Text =
+        val root = java.nio.file.Files.createTempDirectory("orthant").nn.toString.nn.tt
+
+        val former = Store.lines(settings).map: line =>
+          if line == t"format 2" then t"format 1" else line
+
+        val files =
+          List
+            ( t".orthant/config.tel"                                    -> Store.text(former),
+              t".orthant/data/root/guide/intro.md"                      -> Store.text(base),
+              t".orthant/data/release=v2/guide/intro.md.delta"          -> Store.text(later),
+              t".orthant/data/language=fr/guide/intro.md.delta"         -> Store.text(french),
+              t".orthant/data/release=v2,language=fr_CA/guide/extra.md" -> t"Extra.\n" )
+
+        files.each: (file, text) => Disk.write(t"$root/$file", text, t"$root/staging")
+        root
+
+      test(m"A store of format 1 is not read until it is migrated, and then holds what it did"):
+        val root = legacy()
+        val before = code(Store.open(Disk.path(root)))
+        val moved = Migration(root)
+        val store = Store.open(Disk.path(root))
+        val expected = Store.open(example())
+
+        val contents = expected.points.map(expected.content(intro, _))
+        val same = store.points.map(store.content(intro, _)) == contents
+
+        (before, moved, store.format, same, Disk.files(t"$root/.orthant/data"), Migration(root))
+
+      . assert: result =>
+          val files =
+            List
+              ( t"_/guide/intro.md", t"fr/_/guide/intro.md.delta", t"fr_CA/v2/_/guide/extra.md",
+                t"v2/_/guide/intro.md.delta" )
+
+          result == (t"↯/o.5.1", 4, 2, true, files, Unset)
+
+      test(m"A migration which was left part done is finished by another"):
+        val root = legacy()
+        Disk.move(t"$root/.orthant/data/language=fr", t"$root/.orthant/data/fr/_")
+        (Migration(root), Store.open(Disk.path(root)).faults.size)
+
+      . assert(_ == (3, 0))
+
+      test(m"A migration writes each delta with the digests of its anchors"):
+        val root = legacy()
+        val twice = french + List(t"", t"- Last line.", t"+ Last line.")
+        val file = t"$root/.orthant/data/language=fr/guide/intro.md.delta"
+        Disk.write(file, Store.text(twice), t"$root/staging")
+        Disk.write(t"$root/.orthant/data/root/notes.md.delta", t"- a\n+ a\n", t"$root/staging")
+        Migration(root)
+        val store = Store.open(Disk.path(root))
+
+        ( Disk.read(t"$root/.orthant/data/fr/_/guide/intro.md.delta"),
+          Disk.read(t"$root/.orthant/data/_/notes.md.delta"), store.faults.size,
+          store.content(intro, store.point(List(t"fr"))) )
+
+      . assert: result =>
+          val last = t"% 0 1 0 ${Imprint.of(List(t"Last line.")).text}"
+          val title = t"@ 0 1 0 ${Imprint.of(List(t"Title")).text}"
+
+          val written =
+            List
+              ( t"orthant 2 language", t"", title, t"+ Titre", t"",
+                t"@ 0 2 0 ${Imprint.of(List(t"Install the tool.", t"Run it.")).text}",
+                t"+ Installez l'outil.", t"+ Lancez-le.", t"", last )
+
+          result == (Store.text(written), t"- a\n+ a\n", 0, translated)
+
+      test(m"A store of format 1 in which two axes have a value of one name is not migrated"):
+        val clashing = Store.lines(config()).map: line =>
+          if line == t"    name v2" then t"    name fr" else line
+
+        val root = legacy(Store.text(clashing))
+        val before = Disk.files(t"$root/.orthant")
+        (code(Migration(root)), Disk.files(t"$root/.orthant") == before)
+
+      . assert(_ == (t"↯/o.5.1", true))
+
+      test(m"A store of format 1 with a directory which names no point is not migrated"):
+        val root = legacy()
+        Disk.write(t"$root/.orthant/data/edition=v2/notes.md", t"Stray.\n", t"$root/staging")
+        val before = Disk.files(t"$root/.orthant/data")
+        (code(Migration(root)), Disk.files(t"$root/.orthant/data") == before)
+
+      . assert(_ == (t"↯/o.1.7", true))
 
       test(m"No store is found where there is none above"):
         val nowhere = java.nio.file.Files.createTempDirectory("orthant").nn.toString.nn.tt
@@ -1886,7 +2101,7 @@ object Tests extends Suite(m"Orthant tests"):
         val point = store.locate(store.space.root, List(t"v2"))
         (store.name(point), store.title(t"release", t"222222222222"))
 
-      . assert(_ == (t"release=222222222222", t"v2"))
+      . assert(_ == (t"222222222222/_", t"v2"))
 
       test(m"A second sync with nothing new does nothing"):
         val store = Sync(fixture(), t"release", early, Nil)(0)
@@ -1920,7 +2135,59 @@ object Tests extends Suite(m"Orthant tests"):
               ( (t"333333333333", t"222222222222", t"v3"),
                 (t"main", t"333333333333", t"(branch)") ),
             List(t"First."), List(t"First.", t"Second."), List(t"First.", t"Second."),
-            List(t"release=333333333333", t"root"), 2, 0, 0 )
+            List(t"333333333333", t"_"), 2, 0, 0 )
+
+      test(m"A released branch's directory is renamed within each point's which holds one"):
+        val root = java.nio.file.Files.createTempDirectory("orthant").nn.toString.nn.tt
+
+        val made =
+          Workspace.init(root, t"docs").axis(t"language", t"en", t"language")
+          . value(t"language", t"fr", Unset).axis(t"release", t"start", t"git", t"v*")
+
+        val store = Sync(made, t"release", early, Nil)(0)
+        Disk.write(t"${store.tree}/notes.md", t"First.\n", store.staging)
+        Worktree.checkin(store, Nil, false, false)
+
+        List(List(t"main"), List(t"fr", t"main")).each: values =>
+          val based = Workspace.load(store.root)
+          Worktree.checkout(based, based.locate(based.space.root, values), false)
+          val text = if values.has(t"fr") then t"Premier.\nSecond.\n" else t"First.\nSecond.\n"
+          Disk.write(t"${store.tree}/notes.md", text, store.staging)
+          Worktree.checkin(based, Nil, false, false)
+
+        val before = Disk.files(store.data)
+        val later = refs(List((t"v1", one), (t"v2", two), (t"v3", three)), three)
+        val synced = Sync(Workspace.load(store.root), t"release", later, Nil)(0)
+        (before, Disk.files(synced.data), Workspace.scan(synced.root)(1).size)
+
+      . assert: result =>
+          def files(value: Text): List[Text] =
+            if value == t"main"
+            then List(t"_/notes.md", t"fr/main/_/notes.md.delta", t"main/_/notes.md.delta")
+            else
+              List
+                ( t"333333333333/_/notes.md.delta", t"_/notes.md",
+                  t"fr/333333333333/_/notes.md.delta" )
+
+          result == (files(t"main"), files(t"333333333333"), 0)
+
+      test(m"A commit whose short name another axis has is named by its whole hash"):
+        val store =
+          fixture().axis(t"other", t"x", t"custom").value(t"other", t"222222222222", Unset)
+
+        values(Sync(store, t"release", early, Nil)(0))
+
+      . assert: found =>
+          found ==
+            List
+              ( (t"start", t"-", t"-"), (t"111111111111", t"start", t"v1"),
+                (two, t"111111111111", t"v2"), (t"main", two, t"(branch)") )
+
+      test(m"A branch whose name another axis has is not tracked"):
+        val store = fixture().axis(t"other", t"x", t"custom").value(t"other", t"main", Unset)
+        code(Sync(store, t"release", early, Nil))
+
+      . assert(_ == t"↯/o.2.6")
 
       test(m"A sync which labels, adds and releases writes what it leaves in memory"):
         val store = Sync(fixture(), t"release", refs(List((t"v1", one)), two), Nil)(0)
@@ -2056,7 +2323,7 @@ object Tests extends Suite(m"Orthant tests"):
         ( store.content(t"Main.scala", point), Disk.directories(store.data),
           Workspace.scan(store.root)(1).size )
 
-      . assert(_ == (Store.lines(patched), List(t"patch=one"), 0))
+      . assert(_ == (Store.lines(patched), List(t"one"), 0))
 
       test(m"A commit which is not a value is read as one, and the configuration is not written"):
         val made = fixture()
@@ -2064,11 +2331,10 @@ object Tests extends Suite(m"Orthant tests"):
         val two = made.commits.excerpt(1, 2).head.or(t"")
         val (seen, point) = Sourcing.locate(store, store.space.root, List(t"one", two))
         val values = Workspace.settings(store.root).axis.bind(_.value).map(_.name)
-        (seen.content(t"Main.scala", point), seen.name(point), values.size)
+        val name = t"one/${two.keep(12)}/_"
+        (seen.content(t"Main.scala", point), seen.name(point) == name, values.size)
 
-      . assert: result =>
-          val name = t"patch=one,upstream=${result(1).skip(19)}"
-          result == (Store.lines(patched) + List(t"", t"// End"), name, 3)
+      . assert(_ == (Store.lines(patched) + List(t"", t"// End"), true, 3))
 
       test(m"A patch to a document which a later commit has not wants attention there"):
         val made = fixture()
@@ -2107,7 +2373,7 @@ object Tests extends Suite(m"Orthant tests"):
 
       test(m"A record at a commit, where nothing may be stored, is a fault"):
         val store = fixture().store
-        Disk.write(t"${store.data}/root/Main.scala", first, store.staging)
+        Disk.write(t"${store.data}/_/Main.scala", first, store.staging)
         Workspace.scan(store.root)(1).map(_.bolt.text)
 
       . assert(_ == List(t"↯/o.1.9"))
@@ -2129,7 +2395,7 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == List(t"↯/o.7.6"))
 
-      test(m"A store with a sourced axis is of format 2, and one of format 1 may not have one"):
+      test(m"A store of format 1 is not read"):
         val store = fixture().store
         val file = t"${store.folder}/config.tel"
         val lines = Store.lines(Disk.read(file).or(t""))
@@ -2208,7 +2474,7 @@ object Tests extends Suite(m"Orthant tests"):
       test(m"Runs of random check-ins store and derive what they did before"):
         Digests.first(200)
 
-      . assert(_ == 679734980)
+      . assert(_ == 1021022535)
 
       List.range(1, 41).each: seed =>
         test(m"A run of random check-ins keeps every invariant (seed $seed)"):
@@ -2398,7 +2664,8 @@ object Trials:
         case Folio.Delta(_, hunks) =>
           parent.let: content =>
             val located = hunks.bind: hunk =>
-              Rebase.occurrences(hunk, content).map: start => (start, hunk)
+              val start = Rebase.locate(hunk, orthant.Content(content))
+              if start < 0 then Nil else List((start, hunk.open(orthant.Content(content), start)))
 
             val outcomes = Rebase(located, content, content)
 
@@ -2493,7 +2760,8 @@ object Solo:
       case Folio.Delta(_, hunks) => parent match
         case content: List[Text] @unchecked =>
           val located = hunks.bind: hunk =>
-            Rebase.occurrences(hunk, content).map: start => (start, hunk)
+            val start = Rebase.locate(hunk, orthant.Content(content))
+            if start < 0 then Nil else List((start, hunk.open(orthant.Content(content), start)))
 
           if located.size != hunks.size then t"a hunk of ${point(release)} is not there once"
           else

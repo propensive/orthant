@@ -20,6 +20,7 @@ package orthant
 
 import proscenium.{List, Nil}
 import soundness.*
+import soundness.dysasymptotics.linearSize
 
 // One stored change: some consecutive lines of the storage parent's content, `replaced`, give way
 // to `lines`. The lines of context `before` and `after` it, with `start` and `end` where the
@@ -42,9 +43,43 @@ case class Hunk
   // position, an insertion coming before a replacement which begins where it is.
   def rank(start: Int): Int = start*2 + (if insertion then 0 else 1)
 
+  // The hunk as the store holds it.
+  def seal: Sealed =
+    val kept = !replaced.nil && replaced == lines
+
+    Sealed
+      ( before.size, replaced.size, after.size, Imprint.of(before + replaced + after),
+        if kept then Nil else lines, former, start, end, kept )
+
+// A hunk as the store holds it: of its anchor, the lines it replaces and the context about
+// them, it has only how many lines each is and the imprint of them all, one after another. A
+// `kept` hunk puts back the lines it replaces, and so has no lines of its own either. It is
+// made a `Hunk` again where its anchor is found.
+case class Sealed
+  ( before:   Int,
+    replaced: Int,
+    after:    Int,
+    anchor:   Imprint,
+    lines:    List[Text],
+    former:   List[Text] = Nil,
+    start:    Boolean    = false,
+    end:      Boolean    = false,
+    kept:     Boolean    = false ):
+
+  def stale: Boolean = !former.nil
+  def insertion: Boolean = replaced == 0
+
+  // The hunk, whose replaced lines begin at `position` of the content its anchor was found in.
+  def open(content: Content, position: Int): Hunk =
+    val taken = content.slice(position, position + replaced)
+
+    Hunk
+      ( taken, if kept then taken else lines, content.slice(position - before, position),
+        content.slice(position + replaced, position + replaced + after), former, start, end )
+
 // What the store holds for a document at a point: its full text, the fact of its absence, or the
 // hunks by which it differs from the storage parent's content, on the named storage axis.
 enum Folio:
   case Base(lines: List[Text])
   case Absent(axis: Text)
-  case Delta(axis: Text, hunks: List[Hunk])
+  case Delta(axis: Text, hunks: List[Sealed])

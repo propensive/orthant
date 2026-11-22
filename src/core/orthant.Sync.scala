@@ -183,8 +183,6 @@ object Sync:
 
           block(Refs(tags, branches, head, ancestor))
 
-  private def short(hash: Text): Text = hash.keep(12)
-
   // The nearest of the axis's commits which are ancestors of a commit, or the commit itself if
   // `inclusive` is set: the root's name if there is none.
   private def nearest
@@ -214,25 +212,29 @@ object Sync:
     ( store: Workspace, axis: Text, old: Text, name: Text, change: ValueEntry => ValueEntry )
   :   Workspace raises Store.Error raises Workspace.Error raises Axis.Error =
 
-    def written(value: Text): Text = t"$axis=${value.cut(t"/").join(t"_")}"
+    // The value's directory is within the directory of each point which a point at the value
+    // is within: at any depth, but never within a point's records, nor within another of its
+    // own. No other value of the store has either name.
+    def move(directory: Text): Unit =
+      Disk.directories(directory).each: child =>
+        val source = t"$directory/$child"
 
-    Disk.directories(store.data).each: directory =>
-      val pairs = directory.cut(t",")
+        if child == Store.folded(old) then
+          def failed(error: fulminate.Error): Store.Error =
+            Store.Error(Store.Reason.Access(source, Orthant.prose(error)))
 
-      if old != name && pairs.has(written(old)) then
-        val moved =
-          pairs.map { pair => if pair == written(old) then written(name) else pair }.join(t",")
+          mitigate:
+            case error: Io.Error   => failed(error)
+            case error: Path.Error => failed(error)
 
-        def failed(error: fulminate.Error): Store.Error =
-          Store.Error(Store.Reason.Access(directory, Orthant.prose(error)))
+          . protect:
+              val target = t"$directory/${Store.folded(name)}".as[Path on Local]
+              source.as[Path on Local].moveTo(target)
 
-        mitigate:
-          case error: Io.Error   => failed(error)
-          case error: Path.Error => failed(error)
+        else if child != Store.records then
+          move(source)
 
-        . protect:
-            val target = t"${store.data}/$moved".as[Path on Local]
-            t"${store.data}/$directory".as[Path on Local].moveTo(target)
+    if old != name then move(store.data)
 
     val entries = store.settings.axis.map: entry =>
       if entry.name != axis then entry else
@@ -309,7 +311,7 @@ object Sync:
           branch == value.name && (tip == hash || refs.ancestor(hash, tip))
 
       def added: (Workspace, List[Text]) =
-        val entry = ValueEntry(short(hash), parent, label = label, commit = hash)
+        val entry = ValueEntry(store.hashed(hash), parent, label = label, commit = hash)
         val note = t"added $title beneath ${store.title(axis, parent)}"
         (add(store, axis, entry), notes + List(note))
 
@@ -317,10 +319,13 @@ object Sync:
         val held = store.dossiers.values.to[List].exists: dossier =>
           dossier.folios.keys.to[List].exists: point => point.coordinates.at(axis) == branch.name
 
-        val renamed = rename(store, axis, branch.name, short(hash),
-            _.copy(label = label, commit = hash, branch = Unset))
+        val name = store.hashed(hash)
 
-        val fresh = add(renamed, axis, ValueEntry(branch.name, short(hash), branch = true))
+        val renamed =
+          rename(store, axis, branch.name, name,
+              _.copy(label = label, commit = hash, branch = Unset))
+
+        val fresh = add(renamed, axis, ValueEntry(branch.name, name, branch = true))
         val note = t"released ${branch.name} as $title; ${branch.name} now follows $title"
 
         val caution = t"warning: everything checked in at ${branch.name} is now part of $title"
@@ -341,6 +346,9 @@ object Sync:
     val synced = wanted.filter(!tracked.has(_)).fold(tagged): (state, branch) =>
       val (store, notes) = state
       if !Store.valid(branch) then abort(Workspace.Error(Workspace.Reason.Name(branch)))
+
+      store.owner(branch).let: other =>
+        abort(Workspace.Error(Workspace.Reason.ValueExists(other.name, branch)))
 
       def unknown: Nothing = abort(Workspace.Error(Workspace.Reason.Branch(branch)))
       val tip = refs.branches.filter(_(0) == branch).head.let(_(1)).or(unknown)
@@ -369,4 +377,4 @@ object Sync:
     if entry.value.exists(_.commit == hash)
     then abort(Workspace.Error(Workspace.Reason.ValueExists(axis, tag)))
 
-    add(store, axis, ValueEntry(short(hash), above, label = tag, commit = hash)).inscribe()
+    add(store, axis, ValueEntry(store.hashed(hash), above, label = tag, commit = hash)).inscribe()

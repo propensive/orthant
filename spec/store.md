@@ -32,7 +32,7 @@ The design of the store is motivated by the following goals:
 
 ## 1. Status
 
-This document is a draft specification of version 1 of the Orthant store format.
+This document is a draft specification of version 2 of the Orthant store format.
 
 It specifies reading. How a store is changed — how an edit is checked in, how stored changes
 follow the content beneath them, how an axis follows a git repository — is described in
@@ -153,22 +153,25 @@ neither directories nor regular files. A store SHOULD NOT contain symbolic links
 ### 6.1 Directory Structure
 
 ```
-.orthant/config.tel                   the configuration (§7)
-.orthant/data/<point>/<path>          a base record (§8.1)
-.orthant/data/<point>/<path>.delta    a delta or absent record (§8.2)
-.orthant/.gitattributes               `* -text`: git is not to alter line endings
-.orthant/.gitignore                   `/work/`
-.orthant/work/                        the state of a working tree (§15); not part of the store
+.orthant/config.tel                     the configuration (§7)
+.orthant/data/<point>/_/<path>          a base record (§8.1)
+.orthant/data/<point>/_/<path>.delta    a delta or absent record (§8.2)
+.orthant/.gitattributes                 `* -text`: git is not to alter line endings
+.orthant/.gitignore                     `/work/`
+.orthant/work/                          the state of a working tree (§15); not part of the store
 ```
+
+Here `<point>` is a directory for each of the point's values which is not a root, one within
+another (§6.3); for the root point it is nothing, and the records are in `.orthant/data/_/`.
 
 The directory which contains `.orthant` is the store's **home**. A directory has a store if it
 contains `.orthant/config.tel`.
 
-`.orthant/data/` contains one directory for each point at which the store holds a record, and
-MAY be missing if the store holds none. Each such directory is a **point directory**. A reader
-MUST ignore an entry of `.orthant/data/` which is not a directory, MUST ignore `.orthant/work/`
-when deriving content, and MUST ignore every other entry of `.orthant/` which this section does
-not name.
+`.orthant/data/` is the **point directory** of the root point, and MAY be missing if the store
+holds no record. Within it, one inside another, are the point directories of the other points
+at which the store holds a record (§6.3). A reader MUST ignore an entry of a point directory
+which is not a directory, MUST ignore `.orthant/work/` when deriving content, and MUST ignore
+every other entry of `.orthant/` which this section does not name.
 
 ### 6.2 Names
 
@@ -183,57 +186,61 @@ digit       ::= "0" | … | "9" ;
 ```
 
 Neither may be `root`. The names of the axes of a store MUST differ from one another, as MUST
-the names of the values of one axis (**↯/o.5.1**). Names are compared as sequences of code points: `FR` and
-`fr` are different values.
+the names of all the values of all its axes: no two values of a store have one name, whether
+they are of one axis or of two (**↯/o.5.1**). A value's name therefore says which axis it is
+of. Names are compared as sequences of code points: `FR` and `fr` are different values.
 
 ### 6.3 Point Directories
 
-The name of a point directory is either `root`, which names the root point, or one or more
-**pairs** joined by `,`:
+A reader reads two kinds of entry of a point directory, each a directory:
 
 ```ebnf
-point-name  ::= "root" | pair , { "," , pair } ;
-pair        ::= axis-name , "=" , folded-value ;
+entry         ::= "_" | folded-value ;
 ```
 
-where `folded-value` is the name of a value with every `/` written as `_`. Each pair gives the
-point's value on one axis; on every axis which no pair names, the point is at the root.
+- `_` is the point's **records directory**: the files beneath it are the point's records
+  (§6.4). No name has a `_` in it, so `_` is the directory of no value.
+- A directory named `folded-value` — the name of a value with every `/` written as `_` — is the
+  point directory of the point which differs from this one only in being at that value on the
+  value's axis.
 
-A point directory's name MUST name each axis at most once, MUST name only axes and values which
-the configuration has, and MUST NOT give the root of an axis. A name which does otherwise does
-not name a point (**↯/o.1.7**). It follows that the root point is named only by `root`.
+The value which such a directory names MUST be a value of the configuration, MUST NOT be the
+root of its axis, and MUST be of an axis which comes after the axis of every value named by a
+directory it is within. A directory, other than `_`, which names no such value does not name a
+point (**↯/o.1.7**), and a reader MUST NOT read anything beneath it as part of the store.
+
+So the path of a point's records directory, beneath `.orthant/data/`, is the folded name of
+its value on each axis on which it is not at the root, in the order of the axes, and then `_`.
+Each point has exactly one such path; the root point's is `_` alone. An axis on which a point
+is at the root is not named, so adding an axis to a store moves no directory.
 
 A store MUST hold no record at a source point (§4): the content there is the source's alone
-(§9.1). A file beneath a directory which names a source point is **↯/o.1.9**. In a store which
-has a sourced axis that is every file beneath `root`, and beneath a directory whose one pair
-names the sourced axis.
+(§9.1). A file beneath the records directory of a source point is **↯/o.1.9**. In a store which
+has a sourced axis that is every file beneath `.orthant/data/_/`, and beneath
+`.orthant/data/<value>/_/` where the value is of the sourced axis.
 
-The pairs SHOULD be in the order of the axes. A reader MUST read them as a set, in whatever
-order they come: adding an axis to a store renames no directory.
-
-> For axes `language` and `release`, in that order, the point at `fr/CA` and `v2` is held in
-> `language=fr_CA,release=v2`; the point at `en`, the root of `language`, and `v2` is held in
-> `release=v2`.
+> For axes `language` and `release`, in that order, the records of the point at `fr/CA` and
+> `v2` are in `fr_CA/v2/_/`; those of the point at `en`, the root of `language`, and `v2` are
+> in `v2/_/`; and `v2/fr_CA/` names no point.
 
 ### 6.4 Record Files
 
-Every file beneath a point directory, at any depth, is a record. Its **relative path** is the
-names of the directories between the point directory and the file, and then the file's name,
-joined by `/`.
+Every file beneath a records directory, at any depth, is a record. Its **relative path** is the
+names of the directories between the records directory and the file, and then the file's name,
+joined by `/`. A directory beneath a records directory names no point, whatever its name.
 
-- In the directory of a point other than the root point, a file whose relative path ends in
-  `.delta` is a delta or absent record (§8.2) of the document whose path is the relative path
-  without those six characters.
+- In the records directory of a point other than the root point, a file whose relative path
+  ends in `.delta` is a delta or absent record (§8.2) of the document whose path is the
+  relative path without those six characters.
 - Every other file is a base record (§8.1) of the document whose path is its relative path. In
-  `root`, that is every file: there, a path ending in `.delta` is a document's path like any
-  other.
+  the root point's records directory, that is every file: there, a path ending in `.delta` is
+  a document's path like any other.
 
 So the path of a document which has a record anywhere but at the root point does not end in
 `.delta`, and no component of a document's path begins with `.`.
 
 The store MUST hold at most one record for a document at a point. A base record and a `.delta`
-record of the same document in the same point directory, or records of one document in two
-directories which name the same point, are **↯/o.1.5**.
+record of the same document in the same records directory are **↯/o.1.5**.
 
 ## 7. Configuration
 
@@ -244,7 +251,7 @@ configuration is missing is no store (**↯/o.4.1**); one whose configuration is
 document, or does not have the structure below, cannot be read (**↯/o.5.1**).
 
 ```
-format 1
+format 2
 tree docs
 axis
   name language
@@ -275,14 +282,14 @@ most one, and *any* any number:
 
 | Keyword | Within | Occurs | Value |
 |---|---|---|---|
-| `format` | the document | once | the version of this format: `1`, or `2` if an axis has a `source` |
+| `format` | the document | once | the version of this format: `2` |
 | `tree` | the document | once | the directory of the working tree, relative to the store's home (§15) |
 | `axis` | the document | any | an axis; the order of occurrence is the order of the axes |
 | `name` | `axis` | once | an `axis-name` (§6.2) |
 | `kind` | `axis` | once | `language`, `custom` or `git` |
 | `prefer` | `axis` | once | `own` or `parent` (§9.5) |
 | `pattern` | `axis` | optional | on an axis of kind `git`, the tags it follows (§7.3) |
-| `source` | `axis` | optional | in a store of format `2`, where the axis's content comes from (§7.4) |
+| `source` | `axis` | optional | where the axis's content comes from (§7.4) |
 | `repository` | `source` | optional | the path of a git repository, relative to the store's home (§7.4) |
 | `prefix` | `source` | optional | a directory of the repository's tree (§7.4) |
 | `value` | `axis` | any | a value of the axis |
@@ -293,9 +300,9 @@ most one, and *any* any number:
 | `commit` | `value` | optional | a commit's hash (§7.3) |
 | `branch` | `value` | optional | `true` or `false` (§7.3) |
 
-Neither version defines any other member. A reader MUST refuse a store whose `format` is
-neither `1` nor `2`, and a store of format `1` in which an axis has a `source` (**↯/o.5.1**). A reader SHOULD ignore a member which this table does not have: one may be added
-without a new version, provided that it has no bearing on content.
+This version defines no other member. A reader MUST refuse a store whose `format` is not `2`
+(**↯/o.5.1**). A reader SHOULD ignore a member which this table does not have: one may be
+added without a new version, provided that it has no bearing on content.
 
 ### 7.2 Axes and Values
 
@@ -334,8 +341,9 @@ affect content.
 ```
 
 - `commit` is the full hash of the commit which the value stands for. The value's `name` is the
-  first twelve hexadecimal digits of it, so that a point directory is named by the commit, and
-  not by a tag which may move.
+  first twelve hexadecimal digits of it, or the whole of it where another value of the store
+  has those twelve for its name, so that a point directory is named by the commit, and not by
+  a tag which may move.
 - `label` is the tags which name that commit. Normatively: the **labels** of a value are the
   pieces of `label`, cut at every `U+0020`, which are not empty; a value with no `label` has
   none. The **title** of a value is its first label or, if it has none, its name.
@@ -349,7 +357,7 @@ term (§12.2) and to show a value.
 
 ### 7.4 Sourced Axes
 
-In a store of format `2`, an axis with a `source` member is **sourced**. Each of its values
+An axis with a `source` member is **sourced**. Each of its values
 stands for a commit of a git repository, the **source**, and the tree of that commit gives the
 content at the value's source point (§9.1).
 
@@ -431,7 +439,7 @@ header  ::= "orthant" , " " , version , " " , axis-name , [ " " , "absent" ] ;
 
 Cut at every `U+0020`, the header MUST have three pieces, or four of which the last is
 `absent`, and the first MUST be `orthant` (**↯/o.1.1**). A file with no lines has no header
-(**↯/o.1.1**). The second piece MUST be `1`; otherwise the file is of a version this
+(**↯/o.1.1**). The second piece MUST be `2`; otherwise the file is of a version this
 specification does not define (**↯/o.1.4**). The third MUST be the name of the storage axis of
 the point whose directory the file is in (**↯/o.1.6**): a change to the order of the axes,
 which would change the meaning of every delta, cannot then go unnoticed.
@@ -460,34 +468,54 @@ or a conflict marker left by a merge, is never read as content.
 | Sigil | Its line is | Meaning |
 |---|---|---|
 | `^` | the start mark | the anchor begins at the start of the content; the sigil stands alone |
-| `=` | a context line | a line of the storage parent's content which the hunk leaves as it is |
 | `!` | a former line | a line which the hunk replaced before the storage parent's content changed |
-| `-` | a replaced line | a line of the storage parent's content which the hunk replaces |
+| `@` | the anchor line | which lines of the storage parent's content the hunk replaces |
+| `%` | the anchor line of a kept hunk | which lines of that content the hunk puts back as they are |
 | `$` | the end mark | the anchor ends at the end of the content; the sigil stands alone |
 | `+` | a new line | a line which the hunk puts in place of the replaced lines |
 
-The lines of a hunk MUST come in this order: the start mark; **leading** context lines; former
-lines; replaced lines; **trailing** context lines; the end mark; new lines. Any of these may be
-missing. A context line is leading if no former or replaced line comes before it in the hunk,
-and trailing otherwise. A line which comes after one that should follow it is **↯/o.1.3**,
-except a context line after the end mark or a new line, which is **↯/o.1.2**. A `^` or `$`
-followed by any other code point is **↯/o.1.2**.
+The text of an anchor line is four pieces, separated by single spaces:
+
+```ebnf
+anchor   ::= count , " " , count , " " , count , " " , imprint ;
+count    ::= "0" | nonzero , { digit } ;
+imprint  ::= 32 * hex ;
+hex      ::= digit | "a" | … | "f" ;
+```
+
+The counts are, in order, the number of **leading** context lines, of **replaced** lines and
+of **trailing** context lines: lines of the storage parent's content, one after another, which
+are together the hunk's **anchor**. The context lines are lines which the hunk leaves as they
+are, and serve only to say where the replaced lines are. The imprint is the imprint (§8.4) of
+all the lines of the anchor, in order. The lines themselves are not in the file: they are the
+storage parent's, where the anchor is found (§9.4). An anchor line which is not so written is
+**↯/o.1.2**. A count has at most nine digits.
+
+The lines of a hunk MUST come in this order: the start mark; former lines; the anchor line;
+the end mark; new lines. A hunk MUST have exactly one anchor line; the others may be missing.
+A line which comes after one that should follow it, a second anchor line, an end mark or a new
+line with no anchor line before it, and a hunk which ends without an anchor line are
+**↯/o.1.3**. A `^` or `$` followed by any other code point is **↯/o.1.2**.
+
+A hunk whose anchor line has the sigil `%` is **kept**: it puts back each line it replaces. It
+MUST have no new lines (**↯/o.1.3**).
 
 A hunk therefore has:
 
 | Part | |
 |---|---|
 | `start` | whether it has a start mark |
-| `before` | the texts of its leading context lines |
 | `former` | the texts of its former lines |
-| `replaced` | the texts of its replaced lines |
-| `after` | the texts of its trailing context lines |
+| `before` | the number of its leading context lines |
+| `replaced` | the number of its replaced lines |
+| `after` | the number of its trailing context lines |
+| `imprint` | the imprint of its anchor |
+| `kept` | whether it is kept |
 | `end` | whether it has an end mark |
-| `lines` | the texts of its new lines: its **own lines** |
+| `lines` | the texts of its new lines: its **own lines**, unless it is kept (§9.4) |
 
-The **anchor** of a hunk is `before`, then `replaced`, then `after`, as one run of lines,
-together with `start` and `end`. A hunk whose `replaced` is empty is an **insertion**. A hunk
-whose `former` is not empty is **stale as stored**.
+A hunk whose `replaced` is 0 is an **insertion**. A hunk whose `former` is not empty is
+**stale as stored**.
 
 In a valid store:
 
@@ -502,27 +530,70 @@ deriving content, and MUST report it (§9.9, §12.2).
 fewest leading context lines with which the anchor occurs once, and a start mark where every
 line before the hunk is not enough; and no trailing context and no end mark. A hunk with
 neither replaced nor new lines stops an insertion which the point would otherwise inherit at
-that place. A hunk whose new lines equal its replaced lines is written only on a translation
-edge, where it says that those lines are their own translation (§11).
+that place. A kept hunk is written only on a translation edge, where it says that the lines it
+replaces are their own translation (§11).
 
 ```
-orthant 1 language
+orthant 2 language
 
-- Install the tool.
+@ 0 1 0 1739b4b7994a5f420f8267a428e7b74a
 + Installez l'outil.
 
 ! Run it.
-- Run it from a terminal.
+@ 0 1 0 1a2ba4db36f8250a0d0fe99450a6da37
 + Lancez-le.
 
-= ## macOS
-- Run the installer.
+@ 1 1 0 19de2266aeb2ab4209c8a621869b9cfd
 + Ouvrez le fichier .dmg.
 
-= Last line.
+% 0 1 0 1d9bbdf53155cd0414964ce2fe3d64a8
+
+@ 1 0 0 1648e4be1dd29bbe0639e6675a07d773
 $
 + <!-- traduction : équipe FR -->
 ```
+
+The first hunk replaces the line `Install the tool.`; the third, the line `Run the installer.`
+where it follows the line `## macOS`; the fourth keeps the line `brew install orthant`; and the
+last inserts a line after `Last line.`, at the end of the content.
+
+### 8.4 Imprints
+
+The **imprint** of a run of lines stands for the lines where they are not written out. It is
+two numbers, each less than the prime `p = 2⁶¹ − 1`, and each made in the same way with two
+constants of its own:
+
+| | byte base `b` | line base `c` |
+|---|---|---|
+| first number | `043f6a8885a308d3` | `04093822299f31d0` |
+| second number | `13198a2e03707344` | `082efa98ec4e6c89` |
+
+(hexadecimal). For one of the numbers:
+
+- The **number of a line** is `h` after this: `h` begins as 0, and for each byte `x` of the
+  line's text in UTF-8, in order, `h` becomes `(h × b + x + 1) mod p`. The line's text does not
+  include the line feed which ends it. The number of the empty line is 0.
+- The **number of a run** is `r` after this: `r` begins as 0, and for each line of the run, in
+  order, whose number is `h`, `r` becomes `(r × c + h + 1) mod p`. The number of a run of no
+  lines is 0.
+
+An imprint is written as thirty-two hexadecimal digits, with `a` to `f` in lower case: the
+first number as sixteen digits, with zeros before it, and then the second likewise.
+
+> The imprint of the one line `Install the tool.` is `1739b4b7994a5f420f8267a428e7b74a`, and
+> that of the two lines `Install the tool.` and `Run it.` is
+> `08925bd35237d6df0001b530ebcb7ed3`.
+
+Two runs which have the same lines have the same imprint. Two runs of as many lines which
+differ have different imprints, but for a chance too small to meet by accident, and a reader
+takes runs of as many lines which have one imprint to have the same lines. The imprint
+is no defence against a store which was made to deceive: runs which share one can be
+contrived.
+
+*(Informative.)* Where `R(i)` is the number of the run of the first `i` lines of a content, the
+number of its lines in `[i, j)` is `(R(j) − R(i) × c^(j − i)) mod p`. So the imprints of all
+the runs of `n` lines of a content are found in time proportional to its length, and with them
+where an anchor of `n` lines occurs.
 
 ## 9. Content
 
@@ -601,17 +672,27 @@ otherwise.
 ### 9.4 Locating
 
 A hunk **occurs at** line `i` of a content `C`, where `n` is the number of lines of its anchor
-(`before`, `replaced`, `after`), if
+(`before + replaced + after`), if
 
 - `0 ≤ i` and `i + n ≤` the length of `C`;
-- the lines of `C` in `[i, i + n)` are equal, one by one, to the lines of the anchor;
+- the imprint (§8.4) of the lines of `C` in `[i, i + n)` is the hunk's `imprint`;
 - if the hunk has `start`, then `i = 0`; and
 - if the hunk has `end`, then `i + n` is the length of `C`.
 
 A hunk which occurs at exactly one line `i` of `C` is **located** in `C`, at the **position**
-`i +` the length of `before`: the line at which its replaced lines begin. A hunk which occurs
-nowhere in `C` is an **orphan** there; one which occurs at more than one line is **ambiguous**
-there. Neither is located, and neither contributes to any content.
+`s = i + before`: the line at which its replaced lines begin. A hunk which occurs nowhere in
+`C` is an **orphan** there; one which occurs at more than one line is **ambiguous** there.
+Neither is located, and neither contributes to any content.
+
+A hunk located in `C` at position `s` has there:
+
+- its **leading context lines**, the lines of `C` in `[s − before, s)`;
+- its **replaced lines**, the lines of `C` in `[s, s + replaced)`;
+- its **trailing context lines**, the lines of `C` in `[s + replaced, s + replaced + after)`;
+- its **own lines**: its replaced lines, if it is kept, and otherwise its new lines.
+
+In what follows, the `replaced` and `lines` of a located hunk are its replaced lines and its
+own lines, and `|replaced|` is the number of the first.
 
 An anchor of no lines, with neither mark, occurs at every `i` from 0 to the length of `C`: it
 is located only in a content of no lines.
@@ -952,7 +1033,8 @@ given. A **term** is:
   axis (**↯/o.2.8**) or the axis no such value (**↯/o.2.1**).
 - `value`, with no `=`, which names a value of whichever axis has one so named, by name or
   failing that by label. It fails if no axis has one (**↯/o.2.8**), or more than one axis has
-  (**↯/o.2.7**).
+  (**↯/o.2.7**): as no two values have one name (§6.2), that is only where a label of a value
+  of one axis is a name or a label of a value of another.
 
 A reader MUST also let a point be given as a value for each axis, with no terms to resolve.
 
@@ -1040,12 +1122,12 @@ this specification defines; the tool has others, for operations which are not sp
 | Code | Condition | Defined in |
 |---|---|---|
 | **↯/o.1.1** | a delta file's header is missing or malformed | §8.2 |
-| **↯/o.1.2** | a line of a hunk has no sigil, or a sigil which is not followed by a space | §8.3 |
-| **↯/o.1.3** | the lines of a hunk are out of order | §8.3 |
-| **↯/o.1.4** | a delta file is of a version other than 1 | §8.2 |
+| **↯/o.1.2** | a line of a hunk has no sigil, or a sigil which is not followed by a space, or is an anchor line which is not written as one | §8.3 |
+| **↯/o.1.3** | the lines of a hunk are out of order, or a hunk has no anchor line or more than one, or a kept hunk has new lines | §8.3 |
+| **↯/o.1.4** | a delta file is of a version other than 2 | §8.2 |
 | **↯/o.1.5** | the store holds more than one record for a document at a point | §6.4 |
 | **↯/o.1.6** | a delta file's header names an axis which is not its point's storage axis | §8.2 |
-| **↯/o.1.7** | a directory of `.orthant/data/` does not name a point | §6.3 |
+| **↯/o.1.7** | a directory beneath `.orthant/data/` does not name a point | §6.3 |
 | **↯/o.1.8** | a stored hunk is not located in its storage parent's content | §8.3, §9.4 |
 | **↯/o.1.9** | the store holds a record at a source point | §6.3 |
 | **↯/o.2.1** | a value is not on the axis | §7.2, §12.2 |
@@ -1056,7 +1138,7 @@ this specification defines; the tool has others, for operations which are not sp
 | **↯/o.4.1** | there is no store | §7.1, §12 |
 | **↯/o.4.5** | a file could not be read, or is not UTF-8 | §5 |
 | **↯/o.4.11** | a strict export found a document which wants attention | §12.3 |
-| **↯/o.5.1** | the configuration could not be read, is of a format other than 1 or 2, has a name twice, or has a source which §7.4 does not allow | §6.2, §7 |
+| **↯/o.5.1** | the configuration could not be read, is of a format other than 2, has a name twice, or has a source which §7.4 does not allow | §6.2, §7 |
 | **↯/o.7.5** | the source could not be read, or none was given | §7.4, §12.2 |
 | **↯/o.7.6** | on a sourced axis, a value's commit does not descend from its parent's | §7.4 |
 
@@ -1074,7 +1156,7 @@ point, which it concerns.
 
 A store has the configuration of §7.1, and three records of one document, `guide/intro.md`.
 
-`.orthant/data/root/guide/intro.md`, a base record at (`en`, `v1`):
+`.orthant/data/_/guide/intro.md`, a base record at (`en`, `v1`):
 
 ```
 Title
@@ -1085,29 +1167,32 @@ Run it.
 Last line.
 ```
 
-`.orthant/data/release=v2/guide/intro.md.delta`, a delta record at (`en`, `v2`):
+`.orthant/data/v2/_/guide/intro.md.delta`, a delta record at (`en`, `v2`):
 
 ```
-orthant 1 release
+orthant 2 release
 
-- Run it.
+@ 0 1 0 138c45893efd9caa0fee72c0480feb28
 + Run it from a terminal.
 + New para.
 ```
 
-`.orthant/data/language=fr/guide/intro.md.delta`, a delta record at (`fr`, `v1`):
+Its one hunk replaces the line `Run it.`.
+
+`.orthant/data/fr/_/guide/intro.md.delta`, a delta record at (`fr`, `v1`):
 
 ```
-orthant 1 language
+orthant 2 language
 
-- Title
+@ 0 1 0 1d6c966d251bc9da080d2e3ebf310019
 + Titre
 
-- Install the tool.
-- Run it.
+@ 0 2 0 08925bd35237d6df0001b530ebcb7ed3
 + Installez l'outil.
 + Lancez-le.
 ```
+
+Its hunks replace the line `Title`, and the two lines `Install the tool.` and `Run it.`.
 
 **At (`en`, `v2`).** The storage axis is `release`, the storage parent is (`en`, `v1`), and the
 point is its own only origin. Its hunk is located at position 3 of the root's content, and is a
@@ -1199,23 +1284,30 @@ sees part of a file.
 
 ## 16. Later Versions
 
-A change to this format which a reader of version 1 would misread is a new version. The
+A change to this format which a reader of this version would misread is a new version. The
 configuration's `format` gives the version of the store, and each delta file's header gives the
 version of that file; a reader MUST refuse either if it is of a version the reader does not
 know (**↯/o.5.1**, **↯/o.1.4**), and MUST NOT read what it can of it.
 
-Version 2 is version 1 with sourced axes (§7.4). A reader of version 1 alone would take the
-content of such a store to be what its records give, and so it is a version of its own; a
-store which has no sourced axis is of version 1, and is read as it always was. The delta
-files of both are of version 1.
+Version 1 held the records of each point in one directory of `.orthant/data/`: `root` for the
+root point, and otherwise a name made of an `axis=folded-value` pair for each axis on which the
+point is not at the root, the pairs joined by `,` and read in whatever order they came. It
+asked only that the values of one axis differ in name, and it had no sourced axes (§7.4). A
+reader of this version does not read a store of version 1 (**↯/o.5.1**); one whose values all
+differ in name is made a store of this version by moving each of those directories to the
+records directory of the point it names, writing each delta file as one of version 2, and
+writing `format 2`.
 
-A later version may give a hunk's anchor as a position, a count and a hash of the replaced
-lines instead of their text. A reader SHOULD therefore keep locating (§9.4) apart from what
-follows it.
+Version 1 of a delta file had every line of a hunk's anchor where version 2 has their number
+and their imprint: each leading context line, with the sigil `=`; then, after the former
+lines, each replaced line, with the sigil `-`; then each trailing context line, with the sigil
+`=`; and the end mark and the new lines as they are now. It had no kept hunks: a hunk which
+put back the lines it replaced had each as a replaced line and as a new line. A reader of this
+version does not read a delta file of version 1 (**↯/o.1.4**).
 
 ## 17. Completeness of this Specification
 
-This specification is complete for reading versions 1 and 2 of the store: the layout (§6), the
+This specification is complete for reading version 2 of the store: the layout (§6), the
 configuration (§7), the records (§8), the content of every document at every point with its
 placements and issues (§9, §10), the work which remains (§11) and the operations of a reader
 (§12). Its error codes are tabulated once, in §13, and each is referenced where its condition

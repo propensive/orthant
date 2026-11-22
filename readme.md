@@ -49,6 +49,7 @@ orthant cat guide/intro.md fr/CA         # a document at a point, without checki
 orthant export site fr v2 [--strict]     # the plain documents at a point; --strict wants no work left
 orthant <command> --help                 # how a command is written, and what it does
 orthant check                            # verify everything the store holds
+orthant migrate                          # make a store of an earlier format one of this format
 orthant install                          # tab-completions for the shell
 orthant upgrade                          # replace this executable with the newest release
 ```
@@ -88,7 +89,17 @@ every later commit. A commit need not be a value to be read: it is put beneath i
 ancestor among the values, and becomes a value when something is checked in at it. `status`
 says where a patch is stale, where the source no longer has the file it changes (`baseless`),
 and where the source has come to have a file which a patch adds (`overlaid`). Such an axis is
-the last, and a store which has one is of format 2.
+the last.
+
+No two values of a store have one name, even on different axes, so a value alone says which
+axis it is of. What is checked in at a point is kept in a directory for each of its values
+which is not a root, one within another in the order of the axes, and `_` within the last:
+`.orthant/data/fr/v2/_/` for `fr` and `v2`, and `.orthant/data/_/` where every axis is at its
+root. A store made by an earlier release, which kept them in `language=fr,release=v2`, is of
+format 1, and `orthant migrate` makes it one of format 2. The store no
+longer holds the lines which a change replaces, but how many they are and an imprint of them,
+by which they are found in the content the change was made to; in a view they are shown as
+ever.
 
 Commit `.orthant/`; the working tree is added to `.gitignore`. An edit checked in at a point is
 seen at every point below it which has not changed the same lines.

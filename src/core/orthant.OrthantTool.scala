@@ -106,6 +106,10 @@ object OrthantTool:
   private val CheckCommand =
     Subcommand(t"check", t"verify everything the store holds", group = StoreGroup)
 
+  private val MigrateCommand =
+    Subcommand
+      ( t"migrate", t"make a store of an earlier format one of this format", group = StoreGroup )
+
   private val CatCommand =
     Subcommand(t"cat", t"print a document: <path> [<value>…]", group = StoreGroup)
 
@@ -339,6 +343,9 @@ object OrthantTool:
       case CheckCommand() :: _ =>
         execute(attempt(check()))
 
+      case MigrateCommand() :: _ =>
+        execute(attempt(migrate()))
+
       case CatCommand() :: rest =>
         execute:
           operands(rest).map(_()) match
@@ -551,6 +558,15 @@ object OrthantTool:
           t"",
           t"Verifies everything the store holds." )
 
+    case t"migrate" =>
+      List
+        ( t"orthant migrate",
+          t"",
+          t"Makes a store of format 1 one of format 2, in which the records of a point are in a",
+          t"directory for each of its values, one within another, and no two axes have a value",
+          t"of one name; and each change holds an imprint of the lines it replaces, and not",
+          t"the lines. A store which is of format 2 already is left as it is." )
+
     case t"install" =>
       List
         ( t"orthant install",
@@ -733,6 +749,17 @@ object OrthantTool:
       Exit.Ok
     else
       Refused
+
+  private def migrate()(using Cli, Stdio): Raising[Exit] =
+    val root = Workspace.find(here)
+
+    Migration(root).lay(Out.println(t"The store is of format ${Settings.format} already")):
+      count =>
+        val points = if count == 1 then t"1 point" else t"$count points"
+        val format = Settings.format
+        Out.println(t"Made the store one of format $format: moved the records of $points")
+
+    Exit.Ok
 
   private def cat(path: Text, values: List[Text])(using Cli, Stdio): Raising[Refused.type | Exit] =
     val (store, point) = locate(open(), values)
