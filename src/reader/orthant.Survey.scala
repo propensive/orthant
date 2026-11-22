@@ -41,14 +41,13 @@ object Survey:
   def work(store: Store, document: Text, point: Point): Work raises Axis.Error =
     val dossier = store.dossier(document)
 
-    dossier.rendition(point).lay(Work(document, 0, Nil, Nil, 0)): rendition =>
-      val total = if dossier.translation(point) then rendition.reference.count(_ != t"") else 0
+    store.recall(document, point):
+      dossier.rendition(point).lay(Work(document, 0, Nil, Nil, 0)): rendition =>
+        val total = if dossier.translation(point) then rendition.reference.count(_ != t"") else 0
+        val pending = dossier.pending(point).map(rendition.base(_))
+        val stale = rendition.issues.sweep { case Issue.Stale(placement) => placement }
 
-      val pending = dossier.pending(point).map(rendition.base(_))
-
-      val stale = rendition.issues.sweep { case Issue.Stale(placement) => placement }
-
-      Work(document, total, pending, stale, rendition.issues.size - stale.size)
+        Work(document, total, pending, stale, rendition.issues.size - stale.size)
 
   def sum(works: List[Work]): Sum =
     Sum

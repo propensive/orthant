@@ -188,7 +188,8 @@ object Store:
 
     // A name which two axes had, or two values of an axis, would name neither.
     def twice(names: List[Text]): Optional[Text] =
-      names.filter { name => names.count(_ == name) > 1 }.head
+      val counts = names.stdlib.groupBy { name => name }.view.mapValues(_.size).toMap
+      names.filter { name => counts(name) > 1 }.head
 
     twice(settings.axis.map(_.name)).let: name => refuse(t"more than one axis is named $name")
 
@@ -418,6 +419,17 @@ class Store
 
   // Everything which makes the store invalid; it is valid if there is nothing.
   def faults: List[Error] raises Error = omitted + unplaced(documents)
+
+  // The work in a document at a point is asked for by every point which inherits from it, and
+  // is found once.
+  private val works: scala.collection.mutable.HashMap[(Text, Point), Survey.Work] =
+    scala.collection.mutable.HashMap()
+
+  private[orthant] def recall(document: Text, point: Point)(work: => Survey.Work): Survey.Work =
+    works.get((document, point)).getOrElse:
+      val found = work
+      works((document, point)) = found
+      found
 
   def work(document: Text, point: Point): Survey.Work raises Error =
     sound(Survey.work(this, document, point))

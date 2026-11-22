@@ -850,6 +850,8 @@ object OrthantTool:
     ( using Stdio )
   :   Raising[Unit] =
 
+    val liner: Optional[(Text, Placement) => Int] = if here then Worktree.liner(store) else Unset
+
     works.each: work =>
       val document = work.document
 
@@ -857,7 +859,7 @@ object OrthantTool:
       then Out.println(t"  pending   $document (${lines(work.pending.size)} to translate)")
 
       work.stale.each: placement =>
-        val line = if here then Worktree.line(store, document, placement) else placement.from + 1
+        val line = liner.lay(placement.from + 1)(_(document, placement))
         Out.println(t"  stale     $document:$line")
 
       store.dossier(document).issues(point).each:

@@ -1322,6 +1322,17 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == (List(3), List(4)))
 
+      test(m"A stale passage is found by its line in a view against a change"):
+        val store = populated()
+        val point = store.locate(store.space.root, List(t"fr", t"v2"))
+        Worktree.checkout(store, point, false, Worktree.Mode.Against(t"release", t"v1"))
+        val stale = Survey.work(store, t"guide/intro.md", point).stale
+        val shown = Store.lines(Disk.read(t"${store.tree}/guide/intro.md").or(t""))
+        val found = stale.map(Worktree.line(store, t"guide/intro.md", _))
+        (found, found.map { line => shown.excerpt(line - 1, line).join })
+
+      . assert(_ == (List(3), List(t"! Run it.")))
+
       test(m"The points at or below a value are every one which has it or a descendant of it"):
         val store = fixture()
         val both = store.within(List(t"fr", t"v2")).size
