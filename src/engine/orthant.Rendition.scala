@@ -53,6 +53,14 @@ enum Issue:
   case Orphan(origin: Point, hunk: Hunk)
   case Ambiguous(origin: Point, hunk: Hunk)
 
+  // In a space with a sourced axis: a base record at `origin` gives a document which is there
+  // without it, as the source has come to have one of its name.
+  case Overlay(origin: Point)
+
+  // In a space with a sourced axis: hunks are stored at `origin` for a document which is not
+  // there for them to apply to, as the source no longer has it.
+  case Baseless(origin: Point)
+
 // The content of a document at a point, with the storage parent's content it was derived from,
 // the hunks which were applied to that, in order, and whatever wants attention.
 case class Rendition

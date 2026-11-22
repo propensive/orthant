@@ -32,6 +32,14 @@ case class Point(coordinates: Map[Text, Text]):
 case class Space(axes: List[Axis]):
   val root: Point = Point(Map.from(axes.map { axis => axis.name -> axis.root }.stdlib))
 
+  // The axis whose values are commits of a source, if there is one.
+  val sourced: Optional[Axis] = axes.filter(_.sourced).head
+
+  // Whether the content at a point is the source's alone: it is at the root of every axis but
+  // the sourced one. Nothing is stored at such a point.
+  def source(point: Point): Boolean = sourced.lay(false): sourced =>
+    !axes.exists: axis => axis.name != sourced.name && point(axis) != axis.root
+
   // The point at the given values, and at the root of every axis not named.
   def point(values: (Text, Text)*): Point raises Axis.Error =
     values.foldLeft(root): (point, pair) =>

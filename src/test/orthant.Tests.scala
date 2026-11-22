@@ -611,6 +611,100 @@ object Tests extends Suite(m"Orthant tests"):
 
         . assert(_ == t"↯/o.4.9")
 
+    suite(m"A sourced axis"):
+      val patch = Axis(t"patch", List(Value(t"none"), Value(t"one", t"none")))
+
+      val upstream =
+        Axis(t"upstream", List(Value(t"c1"), Value(t"c2", t"c1")), sourced = true)
+
+      val space = Space(List(patch, upstream))
+
+      def at(patch: Text, commit: Text): Point =
+        space.point(t"patch" -> patch, t"upstream" -> commit)
+
+      // A source which has, at each commit named, the lines given.
+      def source(contents: (Text, List[Text])*): Source = new Source:
+        def content(value: Text): Optional[List[Text]] raises Axis.Error =
+          contents.to(List).filter(_(0) == value).head.let(_(1))
+
+      def code(block: => Any): Text =
+        try
+          block
+          t""
+        catch case error: Checkin.Error => error.bolt.text
+
+      val old = List(t"object Main:", t"  def run(): Unit =", t"    println(1)")
+      val next = List(t"object Main:", t"  def run(): Unit =", t"    println(1)", t"", t"// End")
+      val patched = List(t"object Main:", t"  def run(): Unit =", t"    println(2)")
+      val dossier = Dossier(space, source = source(t"c1" -> old, t"c2" -> next))
+      val stored = dossier.checkin(at(t"one", t"c1"), patched)
+
+      test(m"The content at a source point is what the source has at its commit"):
+        (dossier.content(at(t"none", t"c1")), dossier.content(at(t"none", t"c2")))
+
+      . assert(_ == (old, next))
+
+      test(m"A patch is stored as hunks against the source, and nothing at a source point"):
+        (stored.content(at(t"one", t"c1")), stored.folios.keys.to[List].map(space.source(_)))
+
+      . assert(_ == (patched, List(false)))
+
+      test(m"A patch made at one commit applies at a later one"):
+        (stored.content(at(t"one", t"c2")), stored.issues(at(t"one", t"c2")).size)
+
+      . assert(_ == (patched + List(t"", t"// End"), 0))
+
+      test(m"A patch is stale where the source has changed the lines it replaces"):
+        val moved = List(t"object Main:", t"  def run(): Unit =", t"    println(3)")
+        val later = Dossier(space, stored.folios, source(t"c1" -> old, t"c2" -> moved))
+
+        later.issues(at(t"one", t"c2")).map:
+          case Issue.Stale(_) => t"stale"
+          case _              => t"other"
+
+      . assert(_ == List(t"stale"))
+
+      test(m"Nothing is checked in at a source point"):
+        (code(dossier.checkin(at(t"none", t"c1"), patched)),
+         code(dossier.checkin(at(t"none", t"c2"), patched)))
+
+      . assert(_ == (t"↯/o.3.6", t"↯/o.3.6"))
+
+      test(m"Hunks for a document which the source no longer has want attention"):
+        val later = Dossier(space, stored.folios, source(t"c1" -> old))
+        (later.content(at(t"one", t"c2")), later.issues(at(t"one", t"c2")))
+
+      . assert(_ == (Unset, List(Issue.Baseless(at(t"one", t"c1")))))
+
+      test(m"A document which a patch adds is a base record"):
+        val added = Dossier(space, source = source()).checkin(at(t"one", t"c1"), patched)
+        val later = at(t"one", t"c2")
+        (added.folios.at(at(t"one", t"c1")), added.content(later), added.issues(later))
+
+      . assert(_ == (Folio.Base(patched), patched, Nil))
+
+      test(m"A document which a patch adds, and the source then adds, wants attention"):
+        val added = Dossier(space, source = source()).checkin(at(t"one", t"c1"), patched)
+        val later = Dossier(space, added.folios, source(t"c2" -> next))
+        (later.content(at(t"one", t"c2")), later.issues(at(t"one", t"c2")))
+
+      . assert(_ == (patched, List(Issue.Overlay(at(t"one", t"c1")))))
+
+      test(m"A commit put between two others, with nothing stored at it, changes no content"):
+        val between =
+          Axis
+            ( t"upstream", List(Value(t"c1"), Value(t"mid", t"c1"), Value(t"c2", t"mid")),
+              sourced = true )
+
+        val wider = Space(List(patch, between))
+        val mid = old + List(t"// Soon")
+        val origin = source(t"c1" -> old, t"mid" -> mid, t"c2" -> next)
+        val moved = Dossier(wider, stored.folios, origin)
+        def there(commit: Text): Point = wider.point(t"patch" -> t"one", t"upstream" -> commit)
+        (moved.content(there(t"c1")), moved.content(there(t"mid")), moved.content(there(t"c2")))
+
+      . assert(_ == (patched, patched + List(t"// Soon"), patched + List(t"", t"// End")))
+
     suite(m"Repeated lines and preferences"):
       val release = Axis(t"release", List(Value(t"v1"), Value(t"v2", t"v1")))
 
