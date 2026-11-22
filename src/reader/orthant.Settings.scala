@@ -59,11 +59,11 @@ case class AxisEntry
     source:  Optional[SourceEntry] = Unset )
 
 object Settings:
-  // The version of the store format which a store has unless it needs a later one, and the
-  // version of one in which an axis has a source: a reader of the first would take such a
-  // store's content to be what its records alone give.
-  final val format = 1
-  final val sourced = 2
+  // The version of the store format, and the one before it, in which a point's records were in
+  // a directory named for every one of its values at once: a store of that version is read only
+  // to be made one of this.
+  final val format = 2
+  final val legacy = 1
 
   def preference(name: Text): Preference =
     if name == t"parent" then Preference.Parent else Preference.Own

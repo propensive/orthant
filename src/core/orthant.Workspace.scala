@@ -230,6 +230,14 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted, held.upstr
       case Folio.Base(_) => t"$data/${name(point)}/$document"
       case _             => t"$data/${name(point)}/$document.delta"
 
+  // The name of a value which is a commit: the start of the commit's hash, or the whole of it
+  // if a value of some axis has that name already.
+  def hashed(hash: Text): Text raises Error =
+    val short = hash.keep(12)
+
+    if owner(short).absent then short
+    else owner(hash).lay(hash): axis => abort(Error(Reason.ValueExists(axis.name, hash)))
+
   private def holding(dossiers: Map[Text, Dossier]): Workspace =
     Workspace(root, new Store(settings, space, dossiers, omitted, upstream))
 
@@ -308,6 +316,7 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted, held.upstr
 
     source.lay:
       if !Store.valid(value) then abort(Error(Reason.Name(value)))
+      owner(value).let: other => abort(Error(Reason.ValueExists(other.name, value)))
       val entry = AxisEntry(name, kind, t"own", List(ValueEntry(value)), pattern)
       configure(settings.copy(axis = unsourced + List(entry) + sourced))
 
@@ -317,12 +326,12 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted, held.upstr
         // What is stored at the root would be at a point whose content is the source's.
         documents.each: document =>
           if dossier(document).folios.defines(space.root)
-          then abort(Store.Error(Store.Reason.Sourced(t"$data/root/$document")))
+          then abort(Store.Error(Store.Reason.Sourced(t"$data/${this.name(space.root)}/$document")))
 
-        val root = Sourcing.root(this.root, source, value)
+        val found = Sourcing.root(this.root, source, value)
+        val root = found.copy(name = found.commit.lay(found.name)(hashed(_)))
         val entry = AxisEntry(name, kind, t"own", List(root), pattern, source)
-        val later = settings.copy(format = Settings.sourced, axis = unsourced + List(entry))
-        Workspace.open(configure(later).root)
+        Workspace.open(configure(settings.copy(axis = unsourced + List(entry))).root)
 
   // The store with a new value on an axis, beneath `parent` or else beneath the axis's root.
   def value(axis: Text, value: Text, parent: Optional[Text])
@@ -341,7 +350,7 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted, held.upstr
 
     val axis = found.name
     if !Store.valid(value) then abort(Error(Reason.Name(value)))
-    if found.has(value) then abort(Error(Reason.ValueExists(axis, value)))
+    owner(value).let: other => abort(Error(Reason.ValueExists(other.name, value)))
     val above = parent.or(found.root)
     Store.sound(found.value(above))
 

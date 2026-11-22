@@ -58,6 +58,12 @@ object Rebase:
     val found = content.locate(hunk.before + hunk.replaced + hunk.after, hunk.start, hunk.end)
     if found < 0 then found else found + hunk.before.size
 
+  // Where the replaced lines of a hunk which the store holds begin in a content, likewise.
+  def locate(hunk: Sealed, content: Content): Int =
+    val length = hunk.before + hunk.replaced + hunk.after
+    val found = content.find(length, hunk.anchor, hunk.start, hunk.end)
+    if found < 0 then found else found + hunk.before
+
   private case class Hull(from: Int, to: Int, from2: Int, to2: Int, start: Int, hunk: Hunk)
 
   def apply(placed: List[(Int, Hunk)], old: List[Text], next: List[Text]): List[Outcome] =

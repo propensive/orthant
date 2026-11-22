@@ -50,8 +50,8 @@ enum Issue:
   case Conflict(shown: Placement, hidden: Placement)
 
   // A stored hunk's anchor is not in its storage parent's content, or is there more than once.
-  case Orphan(origin: Point, hunk: Hunk)
-  case Ambiguous(origin: Point, hunk: Hunk)
+  case Orphan(origin: Point, hunk: Sealed)
+  case Ambiguous(origin: Point, hunk: Sealed)
 
   // In a space with a sourced axis: a base record at `origin` gives a document which is there
   // without it, as the source has come to have one of its name.

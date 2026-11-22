@@ -80,6 +80,11 @@ object Disk:
     temporary.write(content)
     temporary.moveTo(file.as[Path on Local])
 
+  // Moves a file or a directory, into a directory which is made if it is not there.
+  def move(source: Text, target: Text): Unit raises Store.Error = access(source):
+    directory(parent(target))
+    source.as[Path on Local].moveTo(target.as[Path on Local])
+
   // Deletes a file, and each directory this leaves empty, as far as `within`.
   def remove(file: Text, within: Text): Unit raises Store.Error = access(file):
     val path = file.as[Path on Local]

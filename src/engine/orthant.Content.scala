@@ -166,6 +166,98 @@ final class Content(val lines: List[Text]):
 
   private def symbol(line: Text): Int = symbols.getOrDefault(line, Content.Missing).nn.intValue
 
+  // The imprint of the run of lines which begins the content, for each number of lines, as its
+  // two numbers; and each power of the two bases. The imprint of a line is found once for each
+  // distinct line. They are made when first a imprint is wanted.
+  private final class Marks:
+    val first = new scala.Array[Long](array.length + 1)
+    val second = new scala.Array[Long](array.length + 1)
+    val powers1 = new scala.Array[Long](array.length + 1)
+    val powers2 = new scala.Array[Long](array.length + 1)
+    private val known = new scala.Array[Imprint | Null](symbols.size)
+    powers1(0) = 1L
+    powers2(0) = 1L
+
+    Content.ascend(0, array.length): index =>
+      val line: Imprint = Optional(known(ids(index))).or:
+        val made = Imprint.line(array(index))
+        known(ids(index)) = made
+        made
+
+      first(index + 1) = Imprint.step(first(index), Imprint.Line1, line.first)
+      second(index + 1) = Imprint.step(second(index), Imprint.Line2, line.second)
+      powers1(index + 1) = Imprint.times(powers1(index), Imprint.Line1)
+      powers2(index + 1) = Imprint.times(powers2(index), Imprint.Line2)
+
+  private lazy val marks: Marks = Marks()
+
+  private def window(marks: scala.Array[Long], powers: scala.Array[Long], from: Int, to: Int)
+  :   Long =
+
+    val rest = marks(to) - Imprint.times(marks(from), powers(to - from))
+    if rest < 0 then rest + Imprint.Prime else rest
+
+  // The imprint of the lines from `from` up to, not including, `to`.
+  def imprint(from: Int, to: Int): Imprint =
+    Imprint
+      ( window(marks.first, marks.powers1, from, to),
+        window(marks.second, marks.powers2, from, to) )
+
+  // For a number of lines, where each run of so many begins, by its imprint: `Content.Several`
+  // for an imprint which more than one run has. It is made when first a run of that length is
+  // sought, in time linear in the document, and holds nothing but numbers: a slot for each run
+  // and as many again, each run in the first free slot from the one its imprint gives.
+  private final class Runs(length: Int):
+    private val count = array.length - length + 1
+    private val mask = Integer.highestOneBit(count.max(1))*4 - 1
+    private val firsts = new scala.Array[Long](mask + 1)
+    private val seconds = new scala.Array[Long](mask + 1)
+    private val places = new scala.Array[Int](mask + 1)
+
+    // The slot which holds the imprint, or the free one in which it would be put: a place is
+    // kept as one more than it is, so that a free slot has nought.
+    @tailrec
+    private def slot(first: Long, second: Long, index: Int): Int =
+      if places(index) == 0 || firsts(index) == first && seconds(index) == second then index
+      else slot(first, second, (index + 1) & mask)
+
+    private def slot(first: Long, second: Long): Int =
+      slot(first, second, ((first ^ (first >>> 29) ^ second).toInt*0x9e3779b1) & mask)
+
+    Content.ascend(0, count): index =>
+      val run = imprint(index, index + length)
+      val found = slot(run.first, run.second)
+      firsts(found) = run.first
+      seconds(found) = run.second
+      places(found) = if places(found) == 0 then index + 1 else Content.Several + 1
+
+    def apply(sought: Imprint): Int =
+      val place = places(slot(sought.first, sought.second))
+      if place == 0 then Content.Absent else place - 1
+
+  private val runs: java.util.HashMap[Integer, Runs] = java.util.HashMap()
+
+  private def table(length: Int): Runs =
+    Optional(runs.get(Integer.valueOf(length))).or:
+      val made = Runs(length)
+      runs.put(Integer.valueOf(length), made)
+      made
+
+  // Where a run of `length` lines which has the imprint occurs: the position it begins at if
+  // there is one such, `Content.Absent` if there is none, and `Content.Several` if more than
+  // one. A run which must be at the start or the end of the content occurs once at most.
+  def find(length: Int, sought: Imprint, start: Boolean = false, end: Boolean = false): Int =
+    def at(index: Int): Int =
+      if index >= 0 && index + length <= array.length && imprint(index, index + length) == sought
+      then index
+      else Content.Absent
+
+    if start then (if !end || length == array.length then at(0) else Content.Absent)
+    else if end then at(array.length - length)
+    else if length == 0 then (if array.length == 0 then 0 else Content.Several)
+    else if length > array.length then Content.Absent
+    else table(length)(sought)
+
   private lazy val forward: Content.Automaton = Content.Automaton(ids)
   private lazy val backward: Content.Automaton = Content.Automaton(ids.reverse)
 
