@@ -22,11 +22,11 @@ import proscenium.List
 import soundness.*
 import soundness.dysasymptotics.linearSize
 
-// Prints, for each seed, a digest of the store which a run of random check-ins leaves and of
-// everything derived from it, so that two builds may be compared:
-// `java -cp <test jar> orthant.fingerprint 1 2000`.
-@main
-def fingerprint(from: Int, to: Int): Unit =
+// A digest of the store which a run of random check-ins leaves and of everything derived from
+// it, so that two builds may be compared: `java -cp <test jar> orthant.fingerprint 1 2000`
+// prints one for each seed. The suite holds the digest of the first of them, as it was when
+// the engine was last changed without changing what is stored or derived.
+object Digests:
   import strategies.throwUnsafely
   import Trials.*
 
@@ -53,10 +53,22 @@ def fingerprint(from: Int, to: Int): Unit =
 
     . stdlib.hashCode
 
-  List.range(from, to).each: seed =>
+  def of(seed: Int): Int =
     def recur(dossier: Dossier, step: Int, sum: Int): Int =
       if step == 40 then sum else
         val (after, failure) = check(dossier, seed, step)
         recur(after, step + 1, sum*31 + digest(after) + failure.let(_.s.hashCode).or(0))
 
-    java.lang.System.out.nn.println(seed.toString+" "+recur(start, 0, 0).toString)
+    recur(start, 0, 0)
+
+  // One number for the seeds from 1 to `count`.
+  def first(count: Int): Int = List.range(1, count + 1).map(of).stdlib.hashCode
+
+@main
+def fingerprint(from: Int, to: Int): Unit =
+  List.range(from, to).each: seed =>
+    java.lang.System.out.nn.println(seed.toString+" "+Digests.of(seed).toString)
+
+@main
+def fingerprints(count: Int): Unit =
+  java.lang.System.out.nn.println(Digests.first(count).toString)

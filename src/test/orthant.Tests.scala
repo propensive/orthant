@@ -442,6 +442,20 @@ object Tests extends Suite(m"Orthant tests"):
 
         . assert(_ == (List(etre, t"", telle, t"", exit), 2, true))
 
+        test(m"Two lines left out, and later translated together, are each held as one hunk"):
+          val omitted = List(t"- $be", t"+ $etre", t"", t"- $question", t"", t"- $exit")
+
+          val view =
+            List
+              ( t"- $be", t"+ $etre", t"", t"- $question", t"+ $telle", t"", t"- $exit",
+                t"+ $sort" )
+
+          val filled = Indirect.checkin(Indirect.checkin(partial, fr1, omitted), fr1, view)
+          val shown = Indirect.view(filled, fr1) == view
+          (filled.content(fr1), filled.rendition(fr1).let(_.placements.size), shown)
+
+        . assert(_ == (List(etre, t"", telle, t"", sort), 3, true))
+
         test(m"A stale passage left alone is still stale"):
           stale(Indirect.checkin(third, fr2, Indirect.view(third, fr2).or(Nil)), fr2)
 
@@ -1859,6 +1873,14 @@ object Tests extends Suite(m"Orthant tests"):
       . assert(_ < 8.0)
 
     suite(m"Invariants over random check-ins"):
+      // What `orthant.fingerprints 200` printed when the engine was last changed in a way
+      // which was to change nothing stored or derived. If the store's format or what is
+      // derived is changed on purpose, this number is to be replaced with what it prints then.
+      test(m"Runs of random check-ins store and derive what they did before"):
+        Digests.first(200)
+
+      . assert(_ == 679734980)
+
       List.range(1, 41).each: seed =>
         test(m"A run of random check-ins keeps every invariant (seed $seed)"):
           Trials.trial(seed, 25)
