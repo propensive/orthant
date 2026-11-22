@@ -248,8 +248,10 @@ object Indirect:
 
   // The dossier in which the stale hunks a request names are checked.
   def confirm(dossier: Dossier, point: Point, request: Request): Dossier raises Axis.Error =
-    def named(placement: Placement): Boolean = request.checked.exists: other =>
-      other.start == placement.start && other.end == placement.end
+    val checked: scala.collection.immutable.Set[(Int, Int)] =
+      request.checked.map { other => (other.start, other.end) }.stdlib.toSet
+
+    def named(placement: Placement): Boolean = checked.contains((placement.start, placement.end))
 
     if request.checked.nil then dossier else dossier.confirm(point, named(_))
 

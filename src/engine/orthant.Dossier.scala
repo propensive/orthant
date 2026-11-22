@@ -46,6 +46,9 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
     memo.foreach: (other, rendition) =>
       if !space.below(other, point) then result.memo(other) = rendition
 
+    unplaced.foreach: (other, lines) =>
+      if !space.below(other, point) then result.unplaced(other) = lines
+
     result
 
   // The content of the document at a point, or `Unset` if it does not exist there.
@@ -495,18 +498,15 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
 
     space.storageAxis(point).lay(this): axis =>
       rendition(point).lay(this): rendition =>
-        val stale = rendition.placements.filter: placement => !placement.fresh && select(placement)
+        def chosen(placement: Placement): Boolean = !placement.fresh && select(placement)
+        val stale = rendition.placements.filter(chosen)
 
         val checked: List[(Int, Hunk)] = stale.map: placement =>
-          val hunk =
-            Hunk(rendition.reference.excerpt(placement.start, placement.end), placement.lines)
-
+          val hunk = Hunk(rendition.base.slice(placement.start, placement.end), placement.lines)
           (placement.start, Inscription.anchor(hunk, placement.start, rendition.base))
 
         val kept: List[(Int, Hunk)] =
-          rendition.placements.filter: placement =>
-            placement.origin == point && !stale.has(placement)
-
+          rendition.placements.filter: placement => placement.origin == point && !chosen(placement)
           . map: placement => (placement.start, placement.hunk)
 
         val hunks = (kept + checked).order { (start, hunk) => hunk.rank(start) }.map(_(1))
@@ -542,11 +542,14 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
   def affirm(point: Point, spans: List[(Int, Int)]): Dossier raises Axis.Error =
     space.storageAxis(point).lay(this): axis =>
       rendition(point).lay(this): rendition =>
+        // The hunks in place are in order and apart, so the first of them to end after a span
+        // begins is the only one which need be asked whether it meets the span: it does if it
+        // begins, or inserts, before the span ends.
+        val placed: scala.Array[Placement] = rendition.placements.stdlib.toArray
+
         val free = spans.filter: (start, end) =>
-          start < end && !rendition.placements.exists: placement =>
-            if placement.start == placement.end
-            then start < placement.start && placement.start < end
-            else placement.start < end && start < placement.end
+          val first = Content.search(placed.length)(placed(_).end > start)
+          start < end && (first == placed.length || placed(first).start >= end)
 
         val held = folios.at(point) match
           case Folio.Base(_) | Folio.Absent(_) => true
@@ -558,7 +561,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
             . map: placement => (placement.start, placement.hunk)
 
           val added: List[(Int, Hunk)] = free.map: (start, end) =>
-            val same = rendition.reference.excerpt(start, end)
+            val same = rendition.base.slice(start, end)
             (start, Inscription.anchor(Hunk(same, same), start, rendition.base))
 
           val hunks = (kept + added).order { (start, hunk) => hunk.rank(start) }.map(_(1))
@@ -570,7 +573,16 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
   // and since translated. If that would change the content of any point, or what wants
   // attention there, they stay as they are.
   def unite(point: Point, spans: List[(Int, Int)]): Dossier raises Axis.Error =
-    def one(dossier: Dossier, span: (Int, Int)): Dossier =
+    // Only the points at or below `point` have anything of what is stored there.
+    val lower = space.points.filter(space.below(_, point))
+
+    def same(united: Dossier, dossier: Dossier): Boolean =
+      !lower.exists: other =>
+        united.content(other) != dossier.content(other) ||
+          united.issues(other).size != dossier.issues(other).size ||
+          united.pending(other).size > dossier.pending(other).size
+
+    def one(check: Boolean)(dossier: Dossier, span: (Int, Int)): Dossier =
       dossier.space.storageAxis(point).lay(dossier): axis =>
         dossier.rendition(point).lay(dossier): rendition =>
           val own =
@@ -591,7 +603,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
           taking.lay(dossier): taking =>
             putting.lay(dossier): putting =>
               val whole =
-                Hunk(rendition.reference.excerpt(taking.start, taking.end), putting.hunk.lines)
+                Hunk(rendition.base.slice(taking.start, taking.end), putting.hunk.lines)
 
               val hunks: List[(Int, Hunk)] =
                 rendition.placements.filter: placement =>
@@ -602,15 +614,15 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
 
               val ordered = hunks.order { (start, hunk) => hunk.rank(start) }.map(_(1))
               val united = dossier.retain(point, Folio.Delta(axis.name, ordered))
+              if !check || same(united, dossier) then united else dossier
 
-              val same = !space.points.exists: other =>
-                united.content(other) != dossier.content(other) ||
-                  united.issues(other).size != dossier.issues(other).size ||
-                  united.pending(other).size > dossier.pending(other).size
+    // Every span is united, and the points are derived once to see that nothing has changed;
+    // only if something has is each span tried alone.
+    val all = spans.fold(this)(one(false))
 
-              if same then united else dossier
-
-    spans.fold(this)(one)
+    if all.folios == folios then this
+    else if same(all, this) then all
+    else spans.fold(this)(one(true))
 
   // The dossier after a check-in of `lines` at `point`, in which only the points within `scope`
   // may differ in content: any other point below `point` whose content would change is pinned to
@@ -618,7 +630,8 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
   def checkin(point: Point, lines: Optional[List[Text]], scope: Point => Boolean = point => true)
   :   Dossier raises Axis.Error raises Checkin.Error =
 
-    val below = space.points.filter: other => other != point && space.below(other, point)
+    val every = space.points
+    val below = every.filter: other => other != point && space.below(other, point)
 
     val result = below.fold(store(point, lines)): (dossier, other) =>
       val followed = dossier.follow(this, other)
@@ -632,7 +645,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
       if !scope(other) && result.content(other) != content(other)
       then abort(Checkin.Error(other, Checkin.Reason.Scope))
 
-    space.points.each: other =>
+    every.each: other =>
       val unplaced = result.rendition(other).let(_.issues).or(Nil).exists:
         case Issue.Orphan(origin, _)    => origin == other
         case Issue.Ambiguous(origin, _) => origin == other
