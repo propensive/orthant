@@ -76,6 +76,12 @@ object Worktree:
 
       . protect(text.read[View in Tel])
 
+  // The value which is checked out on an axis, as it was recorded, if it is not the root.
+  def checked(store: Workspace, axis: Text)
+  :   Optional[Text] raises Store.Error raises Workspace.Error =
+
+    recorded(store).let(_.coordinate.filter(_.axis == axis).head).let(_.value)
+
   // The point which is checked out: the root of every axis, until another is.
   def view(store: Workspace): Point raises Store.Error raises Workspace.Error raises Axis.Error =
     recorded(store).lay(store.space.root): view =>
@@ -170,12 +176,21 @@ object Worktree:
   private def lines(file: Text): Optional[List[Text]] raises Store.Error raises Workspace.Error =
     Disk.read(file).let(Store.lines(_))
 
-  // How the working tree differs from what was checked out.
-  def changes(store: Workspace): List[Change] raises Store.Error raises Workspace.Error =
-    val present = Disk.files(store.tree)
+  // How the working tree differs from what was checked out. Where an axis has a source, the
+  // working tree is the source's, with the store's documents written over it: a file which
+  // is in the tree alone is the source's, and is a change only if it is among those `named`.
+  def changes(store: Workspace, named: List[Text] = Nil)
+  :   List[Change] raises Store.Error raises Workspace.Error =
+
+    val sourced = store.space.sourced.present
     val known = Disk.files(pristine(store))
-    val here = present.stdlib.toSet
     val there = known.stdlib.toSet
+
+    val present =
+      if !sourced then Disk.files(store.tree)
+      else (known + named).distinct.filter: document => Disk.exists(t"${store.tree}/$document")
+
+    val here = present.stdlib.toSet
 
     val modified = known.filter(here.contains(_)).filter: document =>
       lines(t"${store.tree}/$document") != lines(t"${pristine(store)}/$document")
@@ -278,14 +293,22 @@ object Worktree:
   :   Tally raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val point = view(store)
-    val shown = mode(store)
-    val selected = changes(store).filter: change => chosen(change.document, paths)
+    val sourced = store.space.sourced.present
+
+    // A file of the source which is checked in for the first time is plain, whatever the mode.
+    def shown(change: Change): Mode =
+      if sourced && change.kind == Kind.Added then Mode.Plain else mode(store)
+
+    val selected = changes(store, paths).filter: change => chosen(change.document, paths)
 
     selected.each: change =>
       val document = change.document
+      val fresh = sourced && change.kind == Kind.Added
 
-      if render(store, document, point, shown) != lines(t"${pristine(store)}/$document")
-      then abort(Workspace.Error(Workspace.Reason.Moved(document)))
+      val moved =
+        render(store, document, point, shown(change)) != lines(t"${pristine(store)}/$document")
+
+      if !fresh && moved then abort(Workspace.Error(Workspace.Reason.Moved(document)))
 
       if change.kind == Kind.Added && document.ends(t".delta")
       then abort(Workspace.Error(Workspace.Reason.Suffix(document)))
@@ -295,23 +318,25 @@ object Worktree:
 
     val updates: List[(Change, Dossier)] = stored.map: change =>
       val content = lines(t"${store.tree}/${change.document}")
-      (change, revise(store, change.document, point, shown, reach, content))
+      (change, revise(store, change.document, point, shown(change), reach, content))
 
     if !dry then
-      updates.fold(store): (store, update) =>
+      val saved = updates.fold(store): (store, update) =>
         val (change, dossier) = update
         val copy = t"${pristine(store)}/${change.document}"
         val saved = store.save(change.document, dossier)
 
         // The document is written again, as the store now gives it: a view's passages may
         // have changed.
-        val written = render(saved, change.document, point, shown)
+        val written = render(saved, change.document, point, mode(store))
 
         written.lay(Disk.remove(copy, pristine(store))): lines =>
           Disk.write(copy, Store.text(lines), store.staging)
           put(t"${store.tree}/${change.document}", Store.text(lines), store)
 
         saved
+
+      if !updates.nil then Sourcing.declare(saved)
 
     val after =
       updates.fold(store): (store, update) => store.supposing(update(0).document, update(1))

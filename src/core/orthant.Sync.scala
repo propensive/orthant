@@ -328,8 +328,15 @@ object Sync:
 
         (fresh, notes + List(note) + warning)
 
+    // An axis with a source has commits for its values, and a branch is not one.
+    val sourced = entry.source.present
+    if sourced && !track.nil then abort(Workspace.Error(Workspace.Reason.Sourced(axis)))
     val tracked = git(tagged(0), axis).value.filter(_.branch.or(false)).map(_.name)
-    val wanted = if track.nil && tracked.nil then refs.head.lay(Nil)(List(_)) else track
+
+    val wanted =
+      if sourced then Nil
+      else if track.nil && tracked.nil then refs.head.lay(Nil)(List(_))
+      else track
 
     val synced = wanted.filter(!tracked.has(_)).fold(tagged): (state, branch) =>
       val (store, notes) = state

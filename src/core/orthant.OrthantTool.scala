@@ -131,6 +131,9 @@ object OrthantTool:
   private val GitFlag =
     Flag[Unit](t"git", false, Nil, t"the axis's values are the repository's tags and branches")
 
+  private val SourceFlag =
+    Flag[Unit](t"source", false, Nil, t"the axis's values are commits, whose trees are its content")
+
   private val ForceFlag =
     Flag[Unit](t"force", false, List('f'), t"discard the edits which are not checked in")
 
@@ -253,10 +256,24 @@ object OrthantTool:
       case AxisCommand() :: AddCommand() :: rest =>
         val language = LanguageFlag().present
         val git = GitFlag().present
-        val kind = if git then t"git" else if language then t"language" else t"custom"
+        val source = SourceFlag().present
+        val kind = if git || source then t"git" else if language then t"language" else t"custom"
+
+        // The repository `.` is the one the store is in.
+        def from(repository: Optional[Text], prefix: Optional[Text]): SourceEntry =
+          SourceEntry(repository.let { path => if path == t"." then Unset else path }, prefix)
 
         execute:
           operands(rest).map(_()) match
+            case axis :: value :: Nil if source =>
+              attempt(addAxis(axis, value, kind, Unset, from(Unset, Unset)))
+
+            case axis :: value :: repository :: Nil if source =>
+              attempt(addAxis(axis, value, kind, Unset, from(repository, Unset)))
+
+            case axis :: value :: repository :: prefix :: Nil if source =>
+              attempt(addAxis(axis, value, kind, Unset, from(repository, prefix)))
+
             case axis :: value :: Nil =>
               attempt(addAxis(axis, value, kind, Unset))
 
@@ -264,7 +281,7 @@ object OrthantTool:
               attempt(addAxis(axis, value, kind, pattern))
 
             case _ =>
-              usage(t"orthant axis add <axis> <root value> [--language | --git [<tag pattern>]]")
+              usage(axisSynopsis)
 
       case AxisCommand() :: ValueCommand() :: rest =>
         execute:
@@ -399,6 +416,10 @@ object OrthantTool:
     t"orthant checkin [<path>…] [--only <axis> | --since <value> | --origin <axis>]"
 
   // What `--help` says of a command: how it is written, and what it does.
+  private val axisSynopsis: Text =
+    val kinds = t"--language | --git [<tag pattern>] | --source [<repository> [<prefix>]]"
+    t"orthant axis add <axis> <root value> [$kinds]"
+
   private def manual(command: Text): List[Text] = command match
     case t"init" =>
       List
@@ -411,12 +432,19 @@ object OrthantTool:
       List
         ( t"orthant axis",
           t"orthant axis add <axis> <root value> [--language | --git [<tag pattern>]]",
+          t"orthant axis add <axis> <commit> --source [<repository> [<prefix>]]",
           t"orthant axis value <axis> <value> [<parent>]",
           t"orthant axis prefer <axis> own|parent",
           t"",
           t"Lists the axes and their values; adds an axis, or a value beneath another; or chooses",
           t"whether a stale passage on an axis shows its own lines or those it would replace.",
-          t"On a language axis, a value with another language code translates its parent." )
+          t"On a language axis, a value with another language code translates its parent.",
+          t"",
+          t"With --source, the axis's values are commits of a git repository: the one the store",
+          t"is in, or the one at <repository>. What a commit has beneath <prefix>, or in its",
+          t"whole tree, is the content at that commit, and the store holds only what is checked",
+          t"in at the values of the other axes. Any commit which descends from <commit> may be",
+          t"named wherever a value is; `orthant axis value <axis> <commit>` makes one a value." )
 
     case t"sync" =>
       List
@@ -566,8 +594,15 @@ object OrthantTool:
   // The directory the command was run in: the client's, not the daemon's.
   private def here(using cli: Cli): Text = cli.workingDirectory.directory()
 
-  private def open()(using Cli): Workspace raises Store.Error =
-    Workspace.open(Workspace.find(here))
+  private def open()(using Cli): Workspace raises Store.Error raises Workspace.Error =
+    Sourcing.viewing(Workspace.open(Workspace.find(here)))
+
+  // The point at the values given, from the point checked out, in the store which has them: a
+  // commit of an axis's source which is not yet a value of it is made one, in memory.
+  private def locate(store: Workspace, values: List[Text])
+  :   Raising[(Workspace, Point)] =
+
+    Sourcing.locate(store, Worktree.view(store), values)
 
   // A point as it is shown: the value on every axis.
   private def describe(store: Workspace, point: Point): Text =
@@ -586,15 +621,21 @@ object OrthantTool:
     Out.println(t"Created an Orthant store in ${store.folder}; its working tree is $tree/")
     Exit.Ok
 
-  private def addAxis(axis: Text, value: Text, kind: Text, pattern: Optional[Text])
+  private def addAxis
+    ( axis:    Text,
+      value:   Text,
+      kind:    Text,
+      pattern: Optional[Text],
+      source:  Optional[SourceEntry] = Unset )
     ( using Cli, Stdio )
   :   Raising[Exit] =
 
     val store = open()
 
     Disk.locked(store.lock):
-      store.axis(axis, value, kind, pattern)
-      Out.println(t"Added the axis $axis, whose root is $value")
+      val added = store.axis(axis, value, kind, pattern, source)
+      val root = added.space.axes.filter(_.name == axis).head.let(_.root).or(value)
+      Out.println(t"Added the axis $axis, whose root is ${added.title(axis, root)}")
       if kind == t"git" then Out.println(t"Run `orthant sync` to take up the repository's tags.")
       Exit.Ok
 
@@ -605,8 +646,12 @@ object OrthantTool:
     Disk.locked(store.lock):
       val axes = store.settings.axis.filter(_.kind == t"git").map(_.name)
 
-      Sync.reading(store.root): refs =>
-        axes.fold(store): (store, axis) =>
+      axes.fold(store): (store, axis) =>
+        // An axis with a source follows the tags of the source's repository.
+        val sourced = store.entry(axis).let(_.source.present).or(false)
+        val repository = if sourced then store.upstream.let(_.name).or(store.root) else store.root
+
+        Sync.reading(repository): refs =>
           val (synced, notes) = Sync(store, axis, refs, branches)
 
           notes.each: note => Out.println(t"  $axis: $note")
@@ -627,11 +672,18 @@ object OrthantTool:
 
     Disk.locked(store.lock):
       // On an axis which follows the repository, a value with a parent is a tag.
+      val sourced = store.entry(axis).let(_.source.present).or(false)
+
       val updated = parent.lay(store.value(axis, value, parent)): above =>
-        if git then Sync.reading(store.root)(Sync.pin(store, axis, value, above, _))
+        if sourced then store.value(axis, value, Unset)
+        else if git then Sync.reading(store.root)(Sync.pin(store, axis, value, above, _))
         else store.value(axis, value, parent)
 
-      val name = updated.named(axis, value).or(value)
+      // On an axis with a source the value is a commit, named by the start of its hash.
+      val made = updated.entry(axis).lay(Nil)(_.value.map(_.name)).filter: name =>
+        store.named(axis, name).absent
+
+      val name = updated.named(axis, value).or(made.head).or(value)
       val found = updated.space.axes.filter(_.name == axis).head
       val above = found.let(_.value(name).parent).let(updated.title(axis, _)).or(t"")
       val translation = found.let(_.value(name).translation).or(false)
@@ -683,8 +735,7 @@ object OrthantTool:
       Refused
 
   private def cat(path: Text, values: List[Text])(using Cli, Stdio): Raising[Refused.type | Exit] =
-    val store = open()
-    val point = store.locate(Worktree.view(store), values)
+    val (store, point) = locate(open(), values)
 
     store.content(document(store, path), point).lay(absent(path, describe(store, point))):
       lines =>
@@ -718,7 +769,7 @@ object OrthantTool:
 
     else
       Disk.locked(store.lock):
-        val point = store.locate(Worktree.view(store), values)
+        val (located, point) = locate(store, values)
 
         val mode =
           if direct then Worktree.Mode.Plain else if indirect then Worktree.Mode.Beside
@@ -727,9 +778,9 @@ object OrthantTool:
             case Worktree.Mode.Against(_, _) if !values.nil => Worktree.Mode.Beside
             case mode                                       => mode
 
-        store.prepare(List(point))
-        val count = Worktree.checkout(store, point, force, mode)
-        val place = t"${describe(store, point)}${shown(store, mode)}"
+        located.prepare(List(point))
+        val count = Worktree.checkout(located, point, force, mode)
+        val place = t"${describe(located, point)}${shown(located, mode)}"
         Out.println(t"Checked out ${documents(count)} at $place")
         Exit.Ok
 
@@ -821,8 +872,7 @@ object OrthantTool:
     ( using Cli, Stdio, Monitor )
   :   Raising[Exit] =
 
-    val store = open()
-    val point = store.locate(Worktree.view(store), values)
+    val (store, point) = locate(open(), values)
     store.prepare(List(point))
     val target = if directory.starts(t"/") then directory else t"$here/$directory"
     val count = Worktree.publish(store, point, target, strict)
@@ -880,6 +930,14 @@ object OrthantTool:
 
         case Issue.Ambiguous(origin, _) =>
           Out.println(t"  ambiguous $document (a hunk of ${store.name(origin)})")
+
+        case Issue.Overlay(origin) =>
+          val record = t"the record of ${store.name(origin)} gives it whole"
+          Out.println(t"  overlaid  $document (the source has it, and $record)")
+
+        case Issue.Baseless(origin) =>
+          val hunks = t"the hunks of ${store.name(origin)}"
+          Out.println(t"  baseless  $document (the source has none for $hunks)")
 
   // With no values and without `all`, the point checked out; otherwise every point at or below
   // the values. The edits which are not checked in are counted as if they were.

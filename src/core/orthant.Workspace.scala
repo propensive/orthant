@@ -47,6 +47,10 @@ object Workspace:
     case Kind(axis: Text)
     case Clash(document: Text)
     case Unmoved(value: Text)
+    case Revision(revision: Text)
+    case Unrooted(revision: Text, axis: Text)
+    case Shallow(revision: Text, axis: Text)
+    case Sourced(axis: Text)
 
   case class Error(reason: Reason)(using Diagnostics)
   extends fulminate.Error
@@ -113,11 +117,30 @@ object Workspace:
         case Reason.Kind(axis) =>
           m"the axis $axis does not follow a git repository"
 
+        case Reason.Revision(revision) =>
+          m"the source's repository has no commit $revision"
+
+        case Reason.Unrooted(revision, axis) =>
+          m"the commit $revision does not descend from the root of the axis $axis"
+
+        case Reason.Shallow(revision, axis) =>
+          m"""
+            the history of the source's repository is shallow, and does not reach from $revision
+            to a value of the axis $axis
+          """
+
+        case Reason.Sourced(axis) =>
+          m"the axis $axis takes its values from the commits of its source, and has no branches"
+
         case Reason.Preference(axis) =>
           m"the axis $axis has hunks stored on it, so what it prefers cannot change" ):
 
     override def bolt: fulminate.Bolt = reason match
       case Reason.Name(_)                => Orthant.bolt(2, 4)
+      case Reason.Revision(_)            => Orthant.bolt(7, 7)
+      case Reason.Unrooted(_, _)         => Orthant.bolt(7, 8)
+      case Reason.Shallow(_, _)          => Orthant.bolt(7, 9)
+      case Reason.Sourced(_)             => Orthant.bolt(7, 10)
       case Reason.AxisExists(_)          => Orthant.bolt(2, 5)
       case Reason.ValueExists(_, _)      => Orthant.bolt(2, 6)
       case Reason.Preference(_)          => Orthant.bolt(2, 9)
@@ -168,7 +191,12 @@ object Workspace:
   // The store beneath `root`, with whatever of its records can be read; the rest are among its
   // `omitted`.
   def inspect(root: Text): Workspace raises Store.Error =
-    Workspace(root, Store.inspect(Disk.path(root)))
+    Workspace(root, Store.inspect(Disk.path(root), upstream(root, settings(root))))
+
+  // The repository which a store's sourced axis, if it has one, takes its content from.
+  def upstream(root: Text, settings: Settings): Optional[Upstream] raises Store.Error =
+    settings.axis.filter(_.source.present).head.let(_.source).let: source =>
+      Sourcing.repository(root, source)
 
   // The store beneath `root`, which must have nothing wrong with it.
   def load(root: Text): Workspace raises Store.Error =
@@ -180,14 +208,14 @@ object Workspace:
   // hunk which has no one place is not found here: it is found when the document it is in is
   // read at its point, or changed, and `scan` finds them all.
   def open(root: Text): Workspace raises Store.Error =
-    val store = Store.inspect(Disk.path(root))
+    val store = inspect(root)
     store.omitted.head.let(abort(_))
-    Workspace(root, store)
+    store
 
 // A store on disk: the directory `root` which has `.orthant` in it, and the store as it was
 // read from there, or as it has since been made.
 case class Workspace(root: Text, held: Store)
-extends Store(held.settings, held.space, held.dossiers, held.omitted):
+extends Store(held.settings, held.space, held.dossiers, held.omitted, held.upstream):
   import Workspace.{Error, Reason}
 
   val folder: Text = t"$root/.orthant"
@@ -203,7 +231,7 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
       case _             => t"$data/${name(point)}/$document.delta"
 
   private def holding(dossiers: Map[Text, Dossier]): Workspace =
-    Workspace(root, new Store(settings, space, dossiers, omitted))
+    Workspace(root, new Store(settings, space, dossiers, omitted, upstream))
 
   // The point which `from` becomes when moved to each value given, as `axis=value`, or as a
   // value alone where one axis has it.
@@ -249,6 +277,7 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
   :   Workspace raises Store.Error =
 
     val space = Store.sound(settings.space)
+    val origin = if settings.axis.exists(_.source.present) then upstream else Unset
 
     // Each dossier is of the space it was read in, so it is made again in the new one.
     val moved = documents.fold(Map[Text, Dossier]()): (moved, document) =>
@@ -257,27 +286,60 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
       val folios = former.keys.to[List].fold(Map[Point, Folio]()): (folios, point) =>
         former.at(point).lay(folios)(folios.define(place(point), _))
 
-      moved.define(document, Dossier(space, folios))
+      moved.define(document, Dossier(space, folios, Store.source(settings, origin, document)))
 
-    Workspace(root, new Store(settings, space, moved, omitted))
+    Workspace(root, new Store(settings, space, moved, omitted, origin))
 
-  // The store with a new axis, last in precedence, which has the one value `value`.
-  def axis(name: Text, value: Text, kind: Text, pattern: Optional[Text] = Unset)
+  // The store with a new axis, which has the one value `value`. It is last in precedence,
+  // unless the last axis has a source, which it comes before. If it is given a source, `value`
+  // is a revision of the source's repository, and its root is the commit which that names.
+  def axis
+    ( name:    Text,
+      value:   Text,
+      kind:    Text,
+      pattern: Optional[Text]        = Unset,
+      source:  Optional[SourceEntry] = Unset )
   :   Workspace raises Store.Error raises Error =
 
     if !Store.valid(name) || name.contains(t"/") then abort(Error(Reason.Name(name)))
-    if !Store.valid(value) then abort(Error(Reason.Name(value)))
     if settings.axis.exists(_.name == name) then abort(Error(Reason.AxisExists(name)))
-    val entry = AxisEntry(name, kind, t"own", List(ValueEntry(value)), pattern)
-    configure(settings.copy(axis = settings.axis + List(entry)))
+    val unsourced = settings.axis.filter(_.source.absent)
+    val sourced = settings.axis.filter(_.source.present)
+
+    source.lay:
+      if !Store.valid(value) then abort(Error(Reason.Name(value)))
+      val entry = AxisEntry(name, kind, t"own", List(ValueEntry(value)), pattern)
+      configure(settings.copy(axis = unsourced + List(entry) + sourced))
+
+    . apply: source =>
+        if !sourced.nil then abort(Error(Reason.AxisExists(sourced.head.let(_.name).or(name))))
+
+        // What is stored at the root would be at a point whose content is the source's.
+        documents.each: document =>
+          if dossier(document).folios.defines(space.root)
+          then abort(Store.Error(Store.Reason.Sourced(t"$data/root/$document")))
+
+        val root = Sourcing.root(this.root, source, value)
+        val entry = AxisEntry(name, kind, t"own", List(root), pattern, source)
+        Workspace.open(configure(settings.copy(axis = unsourced + List(entry))).root)
 
   // The store with a new value on an axis, beneath `parent` or else beneath the axis's root.
   def value(axis: Text, value: Text, parent: Optional[Text])
   :   Workspace raises Store.Error raises Error =
 
-    if !Store.valid(value) then abort(Error(Reason.Name(value)))
     val unknown = Store.Error(Store.Reason.Unknown(axis))
     val found = space.axes.filter(_.name == axis).head.or(abort(unknown))
+
+    // On a sourced axis a value is a commit, and its parent is whichever value its history
+    // gives it.
+    if !found.sourced then ordinary(found, value, parent)
+    else Sourcing.admit(this, value)(0).inscribe()
+
+  private def ordinary(found: Axis, value: Text, parent: Optional[Text])
+  :   Workspace raises Store.Error raises Error =
+
+    val axis = found.name
+    if !Store.valid(value) then abort(Error(Reason.Name(value)))
     if found.has(value) then abort(Error(Reason.ValueExists(axis, value)))
     val above = parent.or(found.root)
     Store.sound(found.value(above))
