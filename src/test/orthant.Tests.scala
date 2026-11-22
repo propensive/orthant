@@ -1793,6 +1793,22 @@ object Tests extends Suite(m"Orthant tests"):
             List(t"First."), List(t"First.", t"Second."), List(t"First.", t"Second."),
             List(t"release=333333333333", t"root"), 2, 0, 0 )
 
+      test(m"A sync which labels, adds and releases writes what it leaves in memory"):
+        val store = Sync(fixture(), t"release", refs(List((t"v1", one)), two), Nil)(0)
+        val later = refs(List((t"v1", one), (t"v1.0", one), (t"v2", two), (t"v3", three)), three)
+        val (synced, notes) = Sync(store, t"release", later, Nil)
+        (values(Workspace.load(store.root)) == values(synced), values(synced), notes.size)
+
+      . assert: result =>
+          result == (
+            true,
+            List
+              ( (t"start", t"-", t"-"), (t"111111111111", t"start", t"v1 v1.0"),
+                (t"222222222222", t"111111111111", t"v2"),
+                (t"333333333333", t"222222222222", t"v3"),
+                (t"main", t"333333333333", t"(branch)") ),
+            3 )
+
       test(m"A tag with two nearest ancestors is refused, and may be given its parent"):
         val tags = List((t"v1", one), (t"v2", two), (t"v2-side", side))
         val store = Sync(fixture(), t"release", refs(tags, three), Nil)(0)

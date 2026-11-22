@@ -230,13 +230,28 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted):
     holding(if present then dossiers.omit(document) else dossiers.define(document, updated))
 
   // The store with a new configuration, which is written.
-  def configure(settings: Settings): Workspace raises Store.Error =
+  def configure(settings: Settings): Workspace raises Store.Error = adopt(settings).inscribe()
+
+  // Writes the configuration the store has.
+  def inscribe(): Workspace raises Store.Error =
     Disk.write(t"$folder/config.tel", Store.text(Store.lines(settings.in[Tel].show)), staging)
+    this
+
+  // The store with a new configuration, which is not written. A record at a point of this
+  // store is, in that one, at the point which `place` gives for it.
+  def adopt(settings: Settings, place: Point => Point = point => point)
+  :   Workspace raises Store.Error =
+
     val space = Store.sound(settings.space)
 
     // Each dossier is of the space it was read in, so it is made again in the new one.
     val moved = documents.fold(Map[Text, Dossier]()): (moved, document) =>
-      moved.define(document, Dossier(space, dossier(document).folios))
+      val former = dossier(document).folios
+
+      val folios = former.keys.to[List].fold(Map[Point, Folio]()): (folios, point) =>
+        former.at(point).lay(folios)(folios.define(place(point), _))
+
+      moved.define(document, Dossier(space, folios))
 
     Workspace(root, new Store(settings, space, moved, omitted))
 

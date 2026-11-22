@@ -208,7 +208,8 @@ object Sync:
       case _            => abort(Workspace.Error(Workspace.Reason.Lineage(name, entry.name)))
 
   // The store in which a value of an axis has another name: its records are moved, and the
-  // values beneath it follow.
+  // values beneath it follow. The configuration is written if any record is moved, so that it
+  // and the records agree; otherwise it is left for the caller to write.
   private def rename
     ( store: Workspace, axis: Text, old: Text, name: Text, change: ValueEntry => ValueEntry )
   :   Workspace raises Store.Error raises Workspace.Error raises Axis.Error =
@@ -240,7 +241,12 @@ object Sync:
           else if value.parent == old then value.copy(parent = name)
           else value)
 
-    Workspace.load(store.configure(store.settings.copy(axis = entries)).root)
+    def place(point: Point): Point =
+      if point.coordinates.at(axis) == old then Point(point.coordinates.define(axis, name))
+      else point
+
+    val renamed = store.adopt(store.settings.copy(axis = entries), place)
+    if old != name then renamed.inscribe() else renamed
 
   private def add(store: Workspace, axis: Text, value: ValueEntry)
   :   Workspace raises Store.Error raises Workspace.Error raises Axis.Error =
@@ -248,7 +254,7 @@ object Sync:
     val entries = store.settings.axis.map: entry =>
       if entry.name == axis then entry.copy(value = entry.value + List(value)) else entry
 
-    store.configure(store.settings.copy(axis = entries))
+    store.adopt(store.settings.copy(axis = entries))
 
   private def git(store: Workspace, axis: Text)
   :   AxisEntry raises Store.Error raises Workspace.Error =
@@ -325,7 +331,7 @@ object Sync:
     val tracked = git(tagged(0), axis).value.filter(_.branch.or(false)).map(_.name)
     val wanted = if track.nil && tracked.nil then refs.head.lay(Nil)(List(_)) else track
 
-    wanted.filter(!tracked.has(_)).fold(tagged): (state, branch) =>
+    val synced = wanted.filter(!tracked.has(_)).fold(tagged): (state, branch) =>
       val (store, notes) = state
       if !Store.valid(branch) then abort(Workspace.Error(Workspace.Reason.Name(branch)))
 
@@ -336,6 +342,10 @@ object Sync:
 
       ( add(store, axis, ValueEntry(branch, parent, branch = true)),
         notes + List(t"tracking $branch beneath ${store.title(axis, parent)}") )
+
+    // The configuration is written once, with everything which was done.
+    if synced(0).settings != store.settings then synced(0).inscribe()
+    synced
 
   // The store in which a tag is a value beneath a parent which is given, for a tag whose
   // nearest ancestor a sync could not choose.
@@ -352,4 +362,4 @@ object Sync:
     if entry.value.exists(_.commit == hash)
     then abort(Workspace.Error(Workspace.Reason.ValueExists(axis, tag)))
 
-    add(store, axis, ValueEntry(short(hash), above, label = tag, commit = hash))
+    add(store, axis, ValueEntry(short(hash), above, label = tag, commit = hash)).inscribe()
