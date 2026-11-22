@@ -66,6 +66,30 @@ tracked branch has a value of its own name for what is not yet released. When a 
 found on the branch, that value becomes the tag's, with everything checked in at it, and the
 branch starts again beneath it.
 
+An axis can instead take its content from a git repository, so that the store holds only what
+is built on top of it:
+
+```
+orthant axis add patch none
+orthant axis value patch one
+orthant axis add upstream 3.7.0 --source ../scala3 library/src   # values are commits
+orthant checkout one                        # only the documents with something checked in
+orthant checkin Foo.scala                   # a file of the source is named to be taken up
+orthant cat Foo.scala one 3.7.1             # any commit which descends from the root
+orthant axis value upstream 3.7.1           # make a commit a value
+```
+
+At a commit, with every other axis at its root, a document is what the commit's tree has at
+its path, beneath the prefix if one is given; nothing is stored there. The working tree is
+the source's own files at that commit, in the directory the prefix names of a checkout of it,
+and Orthant writes there only the documents which have something checked in. What is checked in at
+`one` is stored as hunks against the source at the commit checked out, and is carried onto
+every later commit. A commit need not be a value to be read: it is put beneath its nearest
+ancestor among the values, and becomes a value when something is checked in at it. `status`
+says where a patch is stale, where the source no longer has the file it changes (`baseless`),
+and where the source has come to have a file which a patch adds (`overlaid`). Such an axis is
+the last, and a store which has one is of format 2.
+
 Commit `.orthant/`; the working tree is added to `.gitignore`. An edit checked in at a point is
 seen at every point below it which has not changed the same lines.
 
@@ -101,7 +125,10 @@ on `dev.propensive:orthant-reader`, which brings the engine with it, and of Soun
 more than the filesystem and TEL. A build which resolves Soundness from its releases resolves
 Orthant's in the same way.
 
-`orthant-reader` is a reader as §12 of `spec/store.md` defines one. It writes nothing.
+`orthant-reader` is a reader as §12 of `spec/store.md` defines one. It writes nothing. A store
+one of whose axes has a source is opened with the source as well, `Store.open(home, upstream)`,
+where `upstream` is an `Upstream`: the reader has no git of its own, and `orthant-core` has one
+which reads a repository on disk, `Sourcing.upstream(directory)`.
 
 ```scala
 import orthant.*, soundness.*

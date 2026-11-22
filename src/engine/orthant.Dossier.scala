@@ -26,8 +26,10 @@ import soundness.dysasymptotics.linearSize
 import soundness.sortingAlgorithms.timsort
 
 // Every version of one document: what the store holds for it at each point of a space. A
-// dossier is a value; a check-in gives a new one.
-case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
+// dossier is a value; a check-in gives a new one. `source` is where its content comes from at
+// the source points of a space which has a sourced axis.
+case class Dossier
+  ( space: Space, folios: Map[Point, Folio] = Map(), source: Optional[Source] = Unset ):
   // Renditions are derived from each other, many times over, so each is computed once.
   private val memo: scala.collection.mutable.HashMap[Point, Optional[Rendition]] =
     scala.collection.mutable.HashMap()
@@ -36,7 +38,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
     scala.collection.mutable.HashMap()
 
   def hold(point: Point, folio: Optional[Folio]): Dossier =
-    Dossier(space, folio.lay(folios.omit(point))(folios.define(point, _)))
+    Dossier(space, folio.lay(folios.omit(point))(folios.define(point, _)), source)
 
   // As `hold`, but what is already derived at the points which do not inherit from `point` is
   // kept, as it is unchanged.
@@ -69,7 +71,11 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
     def base: Optional[Rendition] =
       folios.at(point).let(_.only { case Folio.Base(lines) => Rendition(lines)() })
 
-    space.storageParent(point).lay(base): parent =>
+    // At a source point the content is what the source has, whatever is stored.
+    def sourced: Optional[Rendition] =
+      space.sourced.let { axis => source.let(_.content(point(axis))) }.let(Rendition(_)())
+
+    if space.source(point) then sourced else space.storageParent(point).lay(base): parent =>
       val axis = space.storageAxis(point).or(panic(m"a point with a storage parent has an axis"))
       val origins = specific(space.origins(point))
 
@@ -77,7 +83,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
       // unless a delta more specific than it cancels it.
       def decide(todo: List[Point], deltas: List[Point]): Optional[Rendition] = todo match
         case origin :: tail => folios.at(origin) match
-          case Folio.Base(lines)  if deltas.nil => Rendition(lines)()
+          case Folio.Base(lines)  if deltas.nil => outright(origin, lines)
           case Folio.Absent(_)    if deltas.nil => Unset
           case Folio.Delta(_, _)                => decide(tail, origin :: deltas)
           case Folio.Base(_) | Folio.Absent(_)  => apply(deltas.reverse)
@@ -85,6 +91,12 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
 
         case _ =>
           apply(deltas.reverse)
+
+      // Where a source gives documents, a base record which gives one that is there without
+      // it wants attention: the source has come to have a document of its name.
+      def outright(origin: Point, lines: List[Text]): Rendition =
+        if space.sourced.absent || rendition(parent).absent then Rendition(lines)()
+        else Rendition(lines, issues = List(Issue.Overlay(origin)))()
 
       def apply(deltas: List[Point]): Optional[Rendition] =
         rendition(parent).let(_.content).let(render(deltas, _))
@@ -488,7 +500,25 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
             if same(pruned) then pruned else whole
 
   // What wants attention in the content at a point.
-  def issues(point: Point): List[Issue] raises Axis.Error = rendition(point).let(_.issues).or(Nil)
+  def issues(point: Point): List[Issue] raises Axis.Error =
+    rendition(point).let(_.issues).or(baseless(point))
+
+  // Where a source gives documents, hunks which a point has or inherits want attention if the
+  // document is absent there: the source no longer has what they were written against. They
+  // are the hunks which would have been applied, from the most specific origin.
+  private def baseless(point: Point): List[Issue] raises Axis.Error =
+    def recur(todo: List[Point], found: List[Point]): List[Point] = todo match
+      case origin :: tail => folios.at(origin) match
+        case Folio.Delta(_, Nil)             => recur(tail, found)
+        case Folio.Delta(_, _)               => recur(tail, origin :: found)
+        case Folio.Base(_) | Folio.Absent(_) => found
+        case _                               => recur(tail, found)
+
+      case _ =>
+        found
+
+    if space.sourced.absent || space.source(point) then Nil
+    else recur(specific(space.origins(point)), Nil).reverse.map(Issue.Baseless(_))
 
   // The dossier in which the stale hunks at `point` have been checked: each is stored there as
   // it is shown, against the lines its storage parent now has, and is stale no longer.
@@ -630,6 +660,7 @@ case class Dossier(space: Space, folios: Map[Point, Folio] = Map()):
   def checkin(point: Point, lines: Optional[List[Text]], scope: Point => Boolean = point => true)
   :   Dossier raises Axis.Error raises Checkin.Error =
 
+    if space.source(point) then abort(Checkin.Error(point, Checkin.Reason.Sourced))
     val every = space.points
     val below = every.filter: other => other != point && space.below(other, point)
 

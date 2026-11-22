@@ -611,6 +611,100 @@ object Tests extends Suite(m"Orthant tests"):
 
         . assert(_ == t"↯/o.4.9")
 
+    suite(m"A sourced axis"):
+      val patch = Axis(t"patch", List(Value(t"none"), Value(t"one", t"none")))
+
+      val upstream =
+        Axis(t"upstream", List(Value(t"c1"), Value(t"c2", t"c1")), sourced = true)
+
+      val space = Space(List(patch, upstream))
+
+      def at(patch: Text, commit: Text): Point =
+        space.point(t"patch" -> patch, t"upstream" -> commit)
+
+      // A source which has, at each commit named, the lines given.
+      def source(contents: (Text, List[Text])*): Source = new Source:
+        def content(value: Text): Optional[List[Text]] raises Axis.Error =
+          contents.to(List).filter(_(0) == value).head.let(_(1))
+
+      def code(block: => Any): Text =
+        try
+          block
+          t""
+        catch case error: Checkin.Error => error.bolt.text
+
+      val old = List(t"object Main:", t"  def run(): Unit =", t"    println(1)")
+      val next = List(t"object Main:", t"  def run(): Unit =", t"    println(1)", t"", t"// End")
+      val patched = List(t"object Main:", t"  def run(): Unit =", t"    println(2)")
+      val dossier = Dossier(space, source = source(t"c1" -> old, t"c2" -> next))
+      val stored = dossier.checkin(at(t"one", t"c1"), patched)
+
+      test(m"The content at a source point is what the source has at its commit"):
+        (dossier.content(at(t"none", t"c1")), dossier.content(at(t"none", t"c2")))
+
+      . assert(_ == (old, next))
+
+      test(m"A patch is stored as hunks against the source, and nothing at a source point"):
+        (stored.content(at(t"one", t"c1")), stored.folios.keys.to[List].map(space.source(_)))
+
+      . assert(_ == (patched, List(false)))
+
+      test(m"A patch made at one commit applies at a later one"):
+        (stored.content(at(t"one", t"c2")), stored.issues(at(t"one", t"c2")).size)
+
+      . assert(_ == (patched + List(t"", t"// End"), 0))
+
+      test(m"A patch is stale where the source has changed the lines it replaces"):
+        val moved = List(t"object Main:", t"  def run(): Unit =", t"    println(3)")
+        val later = Dossier(space, stored.folios, source(t"c1" -> old, t"c2" -> moved))
+
+        later.issues(at(t"one", t"c2")).map:
+          case Issue.Stale(_) => t"stale"
+          case _              => t"other"
+
+      . assert(_ == List(t"stale"))
+
+      test(m"Nothing is checked in at a source point"):
+        (code(dossier.checkin(at(t"none", t"c1"), patched)),
+         code(dossier.checkin(at(t"none", t"c2"), patched)))
+
+      . assert(_ == (t"↯/o.3.6", t"↯/o.3.6"))
+
+      test(m"Hunks for a document which the source no longer has want attention"):
+        val later = Dossier(space, stored.folios, source(t"c1" -> old))
+        (later.content(at(t"one", t"c2")), later.issues(at(t"one", t"c2")))
+
+      . assert(_ == (Unset, List(Issue.Baseless(at(t"one", t"c1")))))
+
+      test(m"A document which a patch adds is a base record"):
+        val added = Dossier(space, source = source()).checkin(at(t"one", t"c1"), patched)
+        val later = at(t"one", t"c2")
+        (added.folios.at(at(t"one", t"c1")), added.content(later), added.issues(later))
+
+      . assert(_ == (Folio.Base(patched), patched, Nil))
+
+      test(m"A document which a patch adds, and the source then adds, wants attention"):
+        val added = Dossier(space, source = source()).checkin(at(t"one", t"c1"), patched)
+        val later = Dossier(space, added.folios, source(t"c2" -> next))
+        (later.content(at(t"one", t"c2")), later.issues(at(t"one", t"c2")))
+
+      . assert(_ == (patched, List(Issue.Overlay(at(t"one", t"c1")))))
+
+      test(m"A commit put between two others, with nothing stored at it, changes no content"):
+        val between =
+          Axis
+            ( t"upstream", List(Value(t"c1"), Value(t"mid", t"c1"), Value(t"c2", t"mid")),
+              sourced = true )
+
+        val wider = Space(List(patch, between))
+        val mid = old + List(t"// Soon")
+        val origin = source(t"c1" -> old, t"mid" -> mid, t"c2" -> next)
+        val moved = Dossier(wider, stored.folios, origin)
+        def there(commit: Text): Point = wider.point(t"patch" -> t"one", t"upstream" -> commit)
+        (moved.content(there(t"c1")), moved.content(there(t"mid")), moved.content(there(t"c2")))
+
+      . assert(_ == (patched, patched + List(t"// Soon"), patched + List(t"", t"// End")))
+
     suite(m"Repeated lines and preferences"):
       val release = Axis(t"release", List(Value(t"v1"), Value(t"v2", t"v1")))
 
@@ -1012,7 +1106,7 @@ object Tests extends Suite(m"Orthant tests"):
         val store = populated()
         val file = t"${store.folder}/config.tel"
         val later = Store.lines(Disk.read(file).or(t"")).map: line =>
-          if line == t"format 1" then t"format 2" else line
+          if line == t"format 1" then t"format 3" else line
 
         Disk.write(file, Store.text(later), store.staging)
         code(Workspace.scan(store.root))
@@ -1860,6 +1954,241 @@ object Tests extends Suite(m"Orthant tests"):
         code(Sync(store, t"release", early, Nil))
 
       . assert(_ == t"↯/o.7.4")
+
+    suite(m"A source in a git repository"):
+      def code(block: => Any): Text =
+        try
+          block
+          t""
+        catch
+          case error: Store.Error     => error.bolt.text
+          case error: Workspace.Error => error.bolt.text
+          case error: Axis.Error      => error.bolt.text
+
+      // Runs git in a directory, and gives what it prints.
+      def git(directory: Text, arguments: Text*): Text =
+        // Nothing is signed, whatever the configuration of whoever runs the tests asks for.
+        val identity =
+          List
+            ( t"-c", t"user.name=Orthant", t"-c", t"user.email=orthant@example.com", t"-c",
+              t"commit.gpgsign=false", t"-c", t"tag.gpgsign=false" )
+
+        val command = (List(t"git", t"-C", directory) + identity + arguments.to(List)).map(_.s)
+        val builder = new java.lang.ProcessBuilder(command.stdlib*)
+        builder.redirectErrorStream(true)
+        val process = builder.start().nn
+        val output = new String(process.getInputStream.nn.readAllBytes, "UTF-8")
+        process.waitFor()
+        output.trim.nn.tt
+
+      def write(file: Text, content: Text): Unit =
+        val path = java.nio.file.Paths.get(file.s)
+        java.nio.file.Files.createDirectories(path.nn.getParent)
+        java.nio.file.Files.write(path, content.s.getBytes("UTF-8"))
+
+      val first = t"object Main:\n  def run(): Unit =\n    println(1)\n"
+      val second = t"object Main:\n  def run(): Unit =\n    println(1)\n\n// End\n"
+      val patched = t"object Main:\n  def run(): Unit =\n    println(2)\n"
+
+      // A repository with three commits in a line, the first tagged `v1`, and one apart from
+      // them; and beside it a store whose last axis has it as its source.
+      case class Fixture(store: Workspace, upstream: Text, commits: List[Text], apart: Text)
+
+      def fixture(): Fixture =
+        val base = java.nio.file.Files.createTempDirectory("orthant").nn.toString.nn.tt
+        val upstream = t"$base/upstream"
+        write(t"$upstream/src/Main.scala", first)
+        write(t"$upstream/readme.md", t"Read me.\n")
+        git(upstream, t"init", t"-q", t"-b", t"main")
+        git(upstream, t"add", t".")
+        git(upstream, t"commit", t"-q", t"-m", t"One")
+        git(upstream, t"tag", t"v1")
+        val one = git(upstream, t"rev-parse", t"HEAD")
+        write(t"$upstream/src/Main.scala", second)
+        git(upstream, t"commit", t"-q", t"-am", t"Two")
+        val two = git(upstream, t"rev-parse", t"HEAD")
+        git(upstream, t"rm", t"-q", t"src/Main.scala")
+        git(upstream, t"commit", t"-q", t"-m", t"Three")
+        val three = git(upstream, t"rev-parse", t"HEAD")
+        git(upstream, t"checkout", t"-q", t"--orphan", t"other")
+        git(upstream, t"commit", t"-q", t"--allow-empty", t"-m", t"Apart")
+        val apart = git(upstream, t"rev-parse", t"HEAD")
+        git(upstream, t"checkout", t"-q", t"main")
+        write(t"$base/store/.keep", t"")
+
+        val store =
+          Workspace.init(t"$base/store", t"work").axis(t"patch", t"none", t"custom")
+          . value(t"patch", t"one", Unset)
+          . axis(t"upstream", t"v1", t"git", Unset, SourceEntry(t"../upstream", t"src"))
+
+        Fixture(store, upstream, List(one, two, three), apart)
+
+      // The store after the patch is checked in at the first commit.
+      def patch(made: Fixture): Workspace =
+        val store = made.store
+        val (_, point) = Sourcing.locate(store, store.space.root, List(t"one"))
+        Worktree.checkout(store, point, false)
+        write(t"${store.tree}/Main.scala", patched)
+        Worktree.checkin(store, List(t"Main.scala"), false, false)
+        Sourcing.viewing(Workspace.open(store.root))
+
+      test(m"The root of a sourced axis is the commit named, and is known by its tag"):
+        val made = fixture()
+        val entry = made.store.entry(t"upstream")
+        val root = entry.lay(Nil)(_.value)
+        val axes = made.store.settings.axis.map(_.name)
+        (root.map(_.commit) == List(made.commits.head), root.map(_.title), axes)
+
+      . assert(_ == (true, List(t"v1"), List(t"patch", t"upstream")))
+
+      test(m"The content at a commit is what the repository has there, beneath the prefix"):
+        val made = fixture()
+        val store = made.store
+        val root = store.space.root
+        (store.content(t"Main.scala", root), store.content(t"readme.md", root))
+
+      . assert(_ == (Store.lines(first), Unset))
+
+      test(m"A patch is stored as a delta, and nothing is stored at a commit"):
+        val store = patch(fixture())
+        val point = store.locate(store.space.root, List(t"one"))
+
+        ( store.content(t"Main.scala", point), Disk.directories(store.data),
+          Workspace.scan(store.root)(1).size )
+
+      . assert(_ == (Store.lines(patched), List(t"patch=one"), 0))
+
+      test(m"A commit which is not a value is read as one, and the configuration is not written"):
+        val made = fixture()
+        val store = patch(made)
+        val two = made.commits.excerpt(1, 2).head.or(t"")
+        val (seen, point) = Sourcing.locate(store, store.space.root, List(t"one", two))
+        val values = Workspace.settings(store.root).axis.bind(_.value).map(_.name)
+        (seen.content(t"Main.scala", point), seen.name(point), values.size)
+
+      . assert: result =>
+          val name = t"patch=one,upstream=${result(1).skip(19)}"
+          result == (Store.lines(patched) + List(t"", t"// End"), name, 3)
+
+      test(m"A patch to a document which a later commit has not wants attention there"):
+        val made = fixture()
+        val store = patch(made)
+        val three = made.commits.last.or(t"")
+        val (seen, point) = Sourcing.locate(store, store.space.root, List(t"one", three))
+        (seen.content(t"Main.scala", point), seen.work(t"Main.scala", point).faults)
+
+      . assert(_ == (Unset, 1))
+
+      test(m"A check-in at a commit which is not a value makes it one"):
+        val made = fixture()
+        val store = patch(made)
+        val two = made.commits.excerpt(1, 2).head.or(t"")
+        val (seen, point) = Sourcing.locate(store, Worktree.view(store), List(two))
+        Worktree.checkout(seen, point, false)
+        val again = Sourcing.viewing(Workspace.open(store.root))
+        write(t"${store.tree}/Main.scala", t"${patched}// Done\n")
+        Worktree.checkin(again, Nil, false, false)
+        val after = Sourcing.viewing(Workspace.open(store.root))
+        val values = Workspace.settings(store.root).axis.bind(_.value).map(_.commit)
+
+        ( values.has(two), after.content(t"Main.scala", Worktree.view(after)).let(_.last),
+          Workspace.scan(store.root)(1).size )
+
+      . assert(_ == (true, t"// Done", 0))
+
+      test(m"A revision which names no commit, and a commit apart from the root, are refused"):
+        val made = fixture()
+        val store = made.store
+
+        ( code(Sourcing.locate(store, store.space.root, List(t"upstream=nothing"))),
+          code(Sourcing.locate(store, store.space.root, List(made.apart))) )
+
+      . assert(_ == (t"↯/o.7.7", t"↯/o.7.8"))
+
+      test(m"A record at a commit, where nothing may be stored, is a fault"):
+        val store = fixture().store
+        Disk.write(t"${store.data}/root/Main.scala", first, store.staging)
+        Workspace.scan(store.root)(1).map(_.bolt.text)
+
+      . assert(_ == List(t"↯/o.1.9"))
+
+      test(m"A value whose commit does not descend from its parent's is a fault"):
+        val made = fixture()
+        val store = made.store
+        val file = t"${store.folder}/config.tel"
+        val lines = Store.lines(Disk.read(file).or(t""))
+
+        val more =
+          List(t"  value", t"    name apart", t"    parent ${made.commits.head.or(t"").keep(12)}",
+              t"    commit ${made.apart}")
+
+        val index = lines.stdlib.indexWhere(_.s.startsWith("  source"))
+        val (before, after) = lines.stdlib.splitAt(index)
+        Disk.write(file, Store.text(List.from(before) + more + List.from(after)), store.staging)
+        Workspace.scan(store.root)(1).map(_.bolt.text)
+
+      . assert(_ == List(t"↯/o.7.6"))
+
+      test(m"A store with a sourced axis is of format 2, and one of format 1 may not have one"):
+        val store = fixture().store
+        val file = t"${store.folder}/config.tel"
+        val lines = Store.lines(Disk.read(file).or(t""))
+        val earlier = lines.map: line => if line == t"format 2" then t"format 1" else line
+        Disk.write(file, Store.text(earlier), store.staging)
+        (store.format, code(Workspace.open(store.root)))
+
+      . assert(_ == (2, t"↯/o.5.1"))
+
+      test(m"A sync takes up the tags of the source's repository, and tracks no branch"):
+        val made = fixture()
+        val two = made.commits.excerpt(1, 2).head.or(t"")
+        git(made.upstream, t"tag", t"v2", two)
+
+        val (synced, notes) = Sync.reading(made.upstream): refs =>
+          Sync(made.store, t"upstream", refs, Nil)
+
+        val point = synced.locate(synced.space.root, List(t"v2"))
+
+        val tracked = code:
+          Sync.reading(made.upstream)(Sync(made.store, t"upstream", _, List(t"main")))
+
+        val values = synced.entry(t"upstream").lay(Nil)(_.value.map(_.title))
+        (values, synced.content(t"Main.scala", point), notes.size, tracked)
+
+      . assert(_ == (List(t"v1", t"v2"), Store.lines(second), 1, t"↯/o.7.10"))
+
+      test(m"A commit which a shallow history does not join to the root is refused"):
+        val made = fixture()
+        val store = made.store
+        val shallow = t"${store.root}/../shallow"
+        git(store.root, t"clone", t"-q", t"--depth", t"1", t"file://${made.upstream}", shallow)
+        val file = t"${store.folder}/config.tel"
+        val lines = Store.lines(Disk.read(file).or(t""))
+        val moved = lines.map: line =>
+          if line == t"    repository ../upstream" then t"    repository ../shallow" else line
+
+        Disk.write(file, Store.text(moved), store.staging)
+        val opened = Workspace.open(store.root)
+        code(Sourcing.locate(opened, opened.space.root, List(made.commits.last.or(t""))))
+
+      . assert(_ == t"↯/o.7.9")
+
+      test(m"An axis with a source must be the last"):
+        val store = fixture().store
+        val file = t"${store.folder}/config.tel"
+        val lines = Store.lines(Disk.read(file).or(t""))
+        val value = List(t"  value", t"    name a")
+        val more = List(t"axis", t"  name later", t"  kind custom", t"  prefer own") + value
+        Disk.write(file, Store.text(lines + more), store.staging)
+        code(Workspace.open(store.root))
+
+      . assert(_ == t"↯/o.5.1")
+
+      test(m"An axis added to a store whose last axis has a source comes before it"):
+        val store = fixture().store.axis(t"edition", t"plain", t"custom")
+        store.settings.axis.map(_.name)
+
+      . assert(_ == List(t"patch", t"edition", t"upstream"))
 
     suite(m"Growth"):
       // Doubling the size twice multiplies a linear cost by four, and a quadratic one by

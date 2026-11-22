@@ -41,18 +41,29 @@ case class ValueEntry
   // The name by which the value is shown: its first tag, if it has one.
   def title: Text = labels.head.or(name)
 
+// Where a sourced axis's content comes from: `repository` is the path of a git repository,
+// relative to the directory the store is in, or that directory's own repository if it is not
+// given; `prefix` is the directory of the repository's tree which the documents are in, or the
+// whole tree.
+case class SourceEntry(repository: Optional[Text] = Unset, prefix: Optional[Text] = Unset)
+
 // `pattern` is the tags which an axis following a git repository takes as values; `*` stands
-// for any run of characters, and no pattern takes every tag.
+// for any run of characters, and no pattern takes every tag. An axis with a `source` is
+// sourced: each of its values is a commit of the source, and has a `commit`.
 case class AxisEntry
   ( name:    Text,
     kind:    Text,
     prefer:  Text,
     value:   List[ValueEntry],
-    pattern: Optional[Text] = Unset )
+    pattern: Optional[Text]        = Unset,
+    source:  Optional[SourceEntry] = Unset )
 
 object Settings:
-  // The version of the store format this tool reads and writes.
+  // The version of the store format which a store has unless it needs a later one, and the
+  // version of one in which an axis has a source: a reader of the first would take such a
+  // store's content to be what its records alone give.
   final val format = 1
+  final val sourced = 2
 
   def preference(name: Text): Preference =
     if name == t"parent" then Preference.Parent else Preference.Own
@@ -67,4 +78,4 @@ case class Settings(format: Int, tree: Text, axis: List[AxisEntry]):
       val values = entry.value.map: value =>
         Value(value.name, value.parent, value.translation.or(false))
 
-      Axis(entry.name, values, Settings.preference(entry.prefer))
+      Axis(entry.name, values, Settings.preference(entry.prefer), entry.source.present)

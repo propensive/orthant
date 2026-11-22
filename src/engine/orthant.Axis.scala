@@ -35,21 +35,32 @@ object Axis:
     case Unknown(value: Text)
     case Roots(count: Int)
     case Cycle(value: Text)
+    case Source(value: Text, detail: Text)
 
   case class Error(axis: Text, reason: Reason)(using Diagnostics)
   extends fulminate.Error
     ( reason match
         case Reason.Unknown(value) => m"the value $value is not on the axis $axis"
         case Reason.Roots(count)   => m"the axis $axis has $count roots, but must have one"
-        case Reason.Cycle(value)   => m"the parents of $value on the axis $axis form a cycle" ):
+        case Reason.Cycle(value)   => m"the parents of $value on the axis $axis form a cycle"
+
+        case Reason.Source(value, detail) =>
+          m"the source of the axis $axis could not be read at $value: $detail" ):
 
     override def bolt: fulminate.Bolt = reason match
-      case Reason.Unknown(_) => Orthant.bolt(2, 1)
-      case Reason.Roots(_)   => Orthant.bolt(2, 2)
-      case Reason.Cycle(_)   => Orthant.bolt(2, 3)
+      case Reason.Unknown(_)   => Orthant.bolt(2, 1)
+      case Reason.Roots(_)     => Orthant.bolt(2, 2)
+      case Reason.Cycle(_)     => Orthant.bolt(2, 3)
+      case Reason.Source(_, _) => Orthant.bolt(7, 5)
 
   // An axis whose values are checked to form a tree: one root, every parent present, no cycle.
-  def apply(name: Text, values: List[Value], preference: Preference = Preference.Own)
+  // On a sourced axis each value stands for a commit of a repository, whose tree is the
+  // content at that value where every other axis is at its root.
+  def apply
+    ( name:       Text,
+      values:     List[Value],
+      preference: Preference = Preference.Own,
+      sourced:    Boolean    = false )
   :   Axis raises Error =
 
     val index: Map[Text, Value] = Map.from(values.map { value => value.name -> value }.stdlib)
@@ -65,12 +76,12 @@ object Axis:
 
     values.each: value => climb(value, List(value.name))
 
-    new Axis(name, values, preference, index, root)
+    new Axis(name, values, preference, index, root, sourced)
 
 // A named tree of values. Its order among the axes of a `Space` is its precedence.
 class Axis private
   ( val name: Text, val values: List[Value], val preference: Preference,
-    index: Map[Text, Value], val root: Text ):
+    index: Map[Text, Value], val root: Text, val sourced: Boolean ):
 
   def value(name: Text): Value raises Axis.Error =
     index.at(name).or(abort(Axis.Error(this.name, Axis.Reason.Unknown(name))))

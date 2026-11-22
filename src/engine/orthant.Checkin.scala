@@ -23,7 +23,7 @@ import soundness.*
 // Why a check-in was refused. Nothing is merged interactively: what does not commute is refused.
 object Checkin:
   enum Reason:
-    case Unequal, Scope, Unplaced, Carry, Unreached
+    case Unequal, Scope, Unplaced, Carry, Unreached, Sourced
 
   case class Error(point: Point, reason: Reason)(using Diagnostics)
   extends fulminate.Error
@@ -34,7 +34,10 @@ object Checkin:
         case Reason.Carry    => m"a change could not be carried there: the lines differ"
 
         case Reason.Unreached =>
-          m"the changes, stored where they were sent, would not give the checked-in content" ):
+          m"the changes, stored where they were sent, would not give the checked-in content"
+
+        case Reason.Sourced =>
+          m"the content there is the source's, and nothing is stored over it" ):
 
     override def bolt: fulminate.Bolt = reason match
       case Reason.Unequal   => Orthant.bolt(3, 1)
@@ -42,3 +45,4 @@ object Checkin:
       case Reason.Unplaced  => Orthant.bolt(3, 3)
       case Reason.Carry     => Orthant.bolt(3, 4)
       case Reason.Unreached => Orthant.bolt(3, 5)
+      case Reason.Sourced   => Orthant.bolt(3, 6)

@@ -26,7 +26,8 @@ import soundness.*
 //   1  the store format      4  the working tree and its views
 //   2  axes and points       5  the configuration
 //   3  check-in              6  the command line
-//                            7  synchronizing an axis with git
+//                            7  git: following it, and an axis's source
+//                            8  upgrading the tool
 object Orthant:
   // The letter by which bolt codes name Orthant.
   final val letter = 'o'

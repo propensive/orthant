@@ -41,8 +41,11 @@ object Survey:
   def work(store: Store, document: Text, point: Point): Work raises Axis.Error =
     val dossier = store.dossier(document)
 
+    // Where the document is absent, hunks which it has there none the less are what is wrong.
+    def absent: Work = Work(document, 0, Nil, Nil, dossier.issues(point).size)
+
     store.recall(document, point):
-      dossier.rendition(point).lay(Work(document, 0, Nil, Nil, 0)): rendition =>
+      dossier.rendition(point).lay(absent): rendition =>
         val total = if dossier.translation(point) then rendition.reference.count(_ != t"") else 0
         val pending = dossier.pending(point).map(rendition.base(_))
         val stale = rendition.issues.sweep { case Issue.Stale(placement) => placement }
