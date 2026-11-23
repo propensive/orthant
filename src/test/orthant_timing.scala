@@ -203,3 +203,130 @@ def timingTasks(root: String): Unit =
     val same = second.faults.size == count
     val tasks = since(again)
     java.lang.System.out.nn.println("in turn "+serial+"; in tasks "+tasks+"; same: "+same.toString)
+
+// Times what a command does first on a store with a sourced axis: opening it, twice, asking
+// whether each value's commit descends from its parent's, and placing each of the revisions
+// given among the values, twice:
+// `java -cp <test jar> orthant.timingSourced <store's home> <revision>…`.
+@main
+def timingSourced(root: String, revisions: String*): Unit =
+  import strategies.throwUnsafely
+  def now: Long = java.lang.System.nanoTime
+  def since(start: Long): String = ((now - start)/1000000L).toString+"ms"
+  def say(text: String): Unit = java.lang.System.out.nn.println(text)
+  val start = now
+  val store = Workspace.open(root.tt)
+  say("opened "+store.documents.size.toString+" documents in "+since(start))
+  val again = now
+  Workspace.open(root.tt)
+  say("opened again in "+since(again))
+
+  List.range(0, 2).each: round =>
+    val begin = now
+    val count = store.descents.size
+    say("descents: "+count.toString+" faults in "+since(begin))
+
+  revisions.each: revision =>
+    List.range(0, 2).each: round =>
+      val begin = now
+      val name = Sourcing.admit(store, revision.tt)(1)
+      say("admitted "+revision+" as "+name.s+" in "+since(begin))
+
+// Times the content of every document at each value of an axis, the other axes at the values
+// given: with the store read afresh for each value, as a command for each reads it, and then
+// with one store for them all:
+// `java -cp <test jar> orthant.timingChain <store's home> <axis> <value>…`.
+@main
+def timingChain(root: String, axis: String, values: String*): Unit =
+  import strategies.throwUnsafely
+  import threads.virtualThreads
+  def now: Long = java.lang.System.nanoTime
+  def since(start: Long): String = ((now - start)/1000000L).toString+"ms"
+  def say(text: String): Unit = java.lang.System.out.nn.println(text)
+
+  def along(store: Workspace): List[Point] =
+    val from = store.locate(store.space.root, List.from(values.map(_.tt)))
+    val found = store.space.axes.filter(_.name == axis.tt).head.or(panic(m"no such axis"))
+    found.values.map: value => from.move(found, value.name)
+
+  def read(store: Workspace, points: List[Point]): Int =
+    supervise(store.prepare(points))
+
+    points.fold(0): (count, point) =>
+      count + store.documents.filter { document => store.text(document, point).present }.size
+
+  val first = Workspace.open(root.tt)
+  val count = along(first).size
+  val start = now
+
+  val apart = List.range(0, count).fold(0): (sum, index) =>
+    val store = Workspace.open(root.tt)
+    sum + read(store, along(store).excerpt(index, index + 1))
+
+  say(count.toString+" values, a store for each: "+apart.toString+" documents in "+since(start))
+  val again = now
+  val store = Workspace.open(root.tt)
+  val together = read(store, along(store))
+  say(count.toString+" values, one store: "+together.toString+" documents in "+since(again))
+
+// Times a check-in of one changed line in the longest document at a point, with nothing
+// written to the store: the point is checked out, so this is for a copy of a store:
+// `java -cp <test jar> orthant.timingTree <store's home> <rounds> <value>…`.
+@main
+def timingTree(root: String, rounds: Int, values: String*): Unit =
+  import strategies.throwUnsafely
+  def now: Long = java.lang.System.nanoTime
+  def since(start: Long): String = ((now - start)/1000000L).toString+"ms"
+  def say(text: String): Unit = java.lang.System.out.nn.println(text)
+  val opened = Workspace.open(root.tt)
+  val (store, point) = Sourcing.locate(opened, opened.space.root, List.from(values.map(_.tt)))
+  val begin = now
+  val count = Worktree.checkout(store, point, true, Worktree.Mode.Plain)
+  say("checked out "+count.toString+" documents in "+since(begin))
+
+  val document: Text =
+    store.documents.map: document =>
+      (store.dossier(document).content(point).let(_.size).or(0), document)
+
+    . stdlib.sortBy(-_(0)).head(1)
+
+  val file = t"${store.tree}/$document"
+  val lines = Store.lines(Disk.read(file).or(t""))
+  val edited = lines.stdlib.updated(lines.size/2, t"a changed line").pipe(List.from(_))
+  Disk.write(file, Store.text(edited), store.staging)
+  say(document.s+" has "+lines.size.toString+" lines; "+store.points.size.toString+" points")
+
+  List.range(0, rounds).each: round =>
+    val fresh = Sourcing.locate(Workspace.open(root.tt), opened.space.root, Nil)(0)
+    val start = now
+    val tally = Worktree.checkin(fresh, List(document), false, true)
+    say("check-in, a store newly read: "+tally.effects.size.toString+" effects in "+since(start))
+    val again = now
+    Worktree.checkin(fresh, List(document), false, true)
+    say("check-in, the same store again: "+since(again))
+
+// Times what a daemon does for a call which reads one document at a point, several times in
+// turn and then that many at once: the store is opened as a command opens it, kept from one
+// call to the next: `java -cp <test jar> orthant.timingKept <store's home> <rounds> <value>…`.
+@main
+def timingKept(root: String, rounds: Int, values: String*): Unit =
+  import strategies.throwUnsafely
+  import threads.virtualThreads
+  import probates.cancelProbate
+  def now: Long = java.lang.System.nanoTime
+  def since(start: Long): String = ((now - start)/1000L).toString+"µs"
+  def say(text: String): Unit = java.lang.System.out.nn.println(text)
+
+  def call(): Int =
+    val opened = Sourcing.viewing(Kept.open(root.tt))
+    val (store, point) = Sourcing.locate(opened, opened.space.root, List.from(values.map(_.tt)))
+    store.documents.head.let(store.content(_, point)).let(_.size).or(0)
+
+  List.range(0, rounds).each: round =>
+    val begin = now
+    val lines = call()
+    say("a call: "+lines.toString+" lines in "+since(begin))
+
+  val begin = now
+  val tasks = supervise(List.range(0, rounds).map { round => async(call()) }.map(_.await()))
+  say(rounds.toString+" calls at once: "+tasks.size.toString+" in "+since(begin))

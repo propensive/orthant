@@ -541,8 +541,8 @@ class Store
 
   // The work in a document at a point is asked for by every point which inherits from it, and
   // is found once.
-  private val works: scala.collection.mutable.HashMap[(Text, Point), Survey.Work] =
-    scala.collection.mutable.HashMap()
+  private val works: scala.collection.concurrent.TrieMap[(Text, Point), Survey.Work] =
+    scala.collection.concurrent.TrieMap()
 
   private[orthant] def recall(document: Text, point: Point)(work: => Survey.Work): Survey.Work =
     works.get((document, point)).getOrElse:

@@ -143,6 +143,13 @@ object SelfUpgrade:
   def version(build: Long): Text =
     t"${(build/1000000).show}.${(build/1000%1000).show}.${(build%1000).show}"
 
+  // The version this build is: as the build wrote it, or else as a release's build id gives it.
+  def current(using resident: Resident): Optional[Text] =
+    val written = Optional(getClass.getResourceAsStream("/orthant/version")).let: stream =>
+      try String(stream.readAllBytes.nn, "UTF-8").trim.nn.tt finally stream.close()
+
+    written.or(if resident.buildId > 0 then version(resident.buildId) else Unset)
+
   // Starts the daily check for a newer release, once in each daemon, for a released build. The
   // task runs under the daemon's monitor, so it outlives the invocation which started it, and
   // it never raises: a failed check leaves the last known release in place.

@@ -47,7 +47,12 @@ object Worktree:
 
   // What a check-in did: the changes it stored, those it passed over, and what it did to each
   // point it touched.
-  case class Tally(stored: List[Change], skipped: List[Change], effects: List[Effect] = Nil)
+  // `saved` is the store as the check-in left it, if it wrote anything.
+  case class Tally
+    ( stored:  List[Change],
+      skipped: List[Change],
+      effects: List[Effect]        = Nil,
+      saved:   Optional[Workspace] = Unset )
 
   // How the working tree shows a document: as its plain content; beside its storage parent's
   // content, each line with a sigil; or against a change to that reference, from what it was
@@ -320,7 +325,7 @@ object Worktree:
       val content = lines(t"${store.tree}/${change.document}")
       (change, revise(store, change.document, point, shown(change), reach, content))
 
-    if !dry then
+    val kept: Optional[Workspace] = if dry || updates.nil then Unset else
       val saved = updates.fold(store): (store, update) =>
         val (change, dossier) = update
         val copy = t"${pristine(store)}/${change.document}"
@@ -336,19 +341,35 @@ object Worktree:
 
         saved
 
-      if !updates.nil then Sourcing.declare(saved)
+      Sourcing.declare(saved)
 
     val after =
       updates.fold(store): (store, update) => store.supposing(update(0).document, update(1))
 
-    Tally(stored, skipped, effects(store, after, stored.map(_.document)))
+    Tally(stored, skipped, effects(store, after, stored.map(_.document)), kept)
 
   // What becomes of each point when `documents` change from what one store has to what
   // another has; the points to which nothing happens are left out.
   private def effects(before: Workspace, after: Workspace, documents: List[Text])
   :   List[Effect] raises Axis.Error =
 
-    before.space.points.bind: point =>
+    val space = before.space
+
+    // Nothing happens to a point unless what is stored of a document has changed at it, or at
+    // a point it is below: its content, and its work, come of those records alone. A point
+    // comes after every point it is below, so each is reached from the points just above it.
+    val reached = scala.collection.mutable.HashSet[Point]()
+
+    space.points.each: point =>
+      def stored: Boolean = documents.exists: document =>
+        before.dossier(document).folios.at(point) != after.dossier(document).folios.at(point)
+
+      def beneath: Boolean = space.axes.exists: axis =>
+        axis.value(point(axis)).parent.lay(false) { value => reached(point.move(axis, value)) }
+
+      if beneath || stored then reached += point
+
+    space.points.filter(reached(_)).bind: point =>
       val works = documents.map: document =>
         ( before.dossier(document).content(point) != after.dossier(document).content(point),
           Survey.own(after, document, point), Survey.own(before, document, point) )
@@ -588,6 +609,25 @@ object Worktree:
   :   Int raises Store.Error =
 
     store.publish(point, Disk.path(directory), strict)
+
+  // Each value of an axis, with the point which has it there and is otherwise as `point`.
+  def along(store: Workspace, point: Point, axis: Text): List[(Text, Point)] raises Store.Error =
+    val unknown = Store.Error(Store.Reason.Unknown(axis))
+    val found = store.space.axes.filter(_.name == axis).head.or(abort(unknown))
+    found.values.map: value => (value.name, point.move(found, value.name))
+
+  // Writes every document at each of the points given, those of each beneath the directory of
+  // its value's name within `directory`, and gives their number for each value. If `strict` is
+  // set, nothing is written while any document wants attention at any of the points.
+  def publish(store: Workspace, points: List[(Text, Point)], directory: Text, strict: Boolean)
+  :   List[(Text, Int)] raises Store.Error =
+
+    if strict then points.each: (value, point) =>
+      val wanting = store.documents.count: document => store.work(document, point).wanting
+      if wanting > 0 then abort(Store.Error(Store.Reason.Wanting(wanting, store.name(point))))
+
+    points.map: (value, point) =>
+      (value, store.publish(point, Disk.path(t"$directory/${Store.folded(value)}"), strict))
 
   private def key(placement: Placement): (Point, List[Text]) =
     (placement.origin, placement.hunk.lines)

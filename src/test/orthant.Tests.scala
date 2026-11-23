@@ -1290,6 +1290,18 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == (true, 0, 6))
 
+      test(m"A survey of a store finds the faults which deriving it all at once finds"):
+        import threads.virtualThreads
+        val sound = Workspace.inspect(populated().root)
+        val made = populated()
+        Disk.write(t"${made.data}/_/guide/intro.md", t"Something else.\n", made.staging)
+        val store = Workspace.inspect(made.root)
+        def texts(faults: List[Store.Error]): List[Text] = faults.map(Orthant.prose(_))
+        val surveyed = texts(supervise(store.survey()))
+        (supervise(sound.survey()).size, surveyed == texts(store.faults), surveyed.size > 0)
+
+      . assert(_ == (0, true, true))
+
       test(m"An indirect check-out writes views, and a check-in of one stores its content"):
         val store = populated()
         val french = store.locate(store.space.root, List(t"fr", t"v2"))
@@ -2438,6 +2450,76 @@ object Tests extends Suite(m"Orthant tests"):
         code(Sourcing.locate(opened, opened.space.root, List(made.commits.last.or(t""))))
 
       . assert(_ == t"↯/o.7.9")
+
+      test(m"Whether a commit descends from another is as git has it, across a merge"):
+        val made = fixture()
+        val upstream = made.upstream
+        git(upstream, t"checkout", t"-q", t"-b", t"side", made.commits.head.or(t""))
+        write(t"$upstream/side.md", t"Side.\n")
+        git(upstream, t"add", t".")
+        git(upstream, t"commit", t"-q", t"-m", t"Side")
+        val side = git(upstream, t"rev-parse", t"HEAD")
+        git(upstream, t"checkout", t"-q", t"main")
+        git(upstream, t"merge", t"-q", t"--no-edit", t"side")
+        val merged = git(upstream, t"rev-parse", t"HEAD")
+        val repository = Sourcing.upstream(upstream)
+        val commits = made.commits + List(side, merged, made.apart)
+
+        // Each is asked twice: what is kept of the history gives the same answer as reading it.
+        val wrong = commits.bind: upper =>
+          commits.filter: lower =>
+            val reached = git(upstream, t"rev-list", lower).cut(t"\n").has(upper)
+            def asked: Boolean = repository.ancestor(upper, lower)
+            asked != reached || asked != reached
+
+        (commits.size, wrong)
+
+      . assert(_ == (6, Nil))
+
+      test(m"A revision of the source is taken for the value which its commit is made"):
+        val made = fixture()
+        val store = made.store
+        val two = made.commits.excerpt(1, 2).head.or(t"")
+        val (seen, named) = Sourcing.admitting(store, List(t"one", two))
+        val value = t"upstream=${two.keep(12)}"
+        (code(store.within(List(two))), named == List(t"one", value), seen.within(named).size)
+
+      . assert(_ == (t"↯/o.2.8", true, 1))
+
+      test(m"An export along an axis writes the documents at each of its values"):
+        val made = fixture()
+        val store = patch(made)
+        val out = t"${store.root}/../out"
+        val points = Worktree.along(store, store.space.root, t"patch")
+        val counts = Worktree.publish(store, points, out, false)
+        val none = Disk.read(t"$out/none/Main.scala")
+        val one = Disk.read(t"$out/one/Main.scala")
+        (counts, none, one, code(Worktree.along(store, store.space.root, t"nothing")))
+
+      . assert(_ == (List((t"none", 1), (t"one", 1)), first, patched, t"↯/o.2.8"))
+
+      test(m"A store which is kept is read again only when a file of it has changed"):
+        val made = fixture()
+        patch(made)
+        val root = made.store.root
+        val kept = Kept.open(root)
+        val again = Kept.open(root)
+        val (_, point) = Sourcing.locate(kept, kept.space.root, List(t"one"))
+        Worktree.checkout(kept, point, false)
+        write(t"${kept.tree}/Other.scala", t"object Other\n")
+        val tally = Worktree.checkin(kept, List(t"Other.scala"), false, false)
+        val changed = Kept.open(root)
+        val read = Workspace.open(root)
+
+        val same = tally.saved.lay(false): saved =>
+          saved.settings == read.settings && !read.documents.exists: document =>
+            saved.dossier(document).folios != read.dossier(document).folios
+
+        ( again eq kept, changed eq kept, changed.documents.size,
+          changed.dossier(t"Main.scala") eq kept.dossier(t"Main.scala"),
+          changed.content(t"Other.scala", point), same )
+
+      . assert(_ == (true, false, 2, true, List(t"object Other"), true))
 
       test(m"An axis with a source must be the last"):
         val store = fixture().store

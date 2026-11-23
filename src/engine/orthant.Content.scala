@@ -153,17 +153,24 @@ final class Content(val lines: List[Text]):
 
     List.from(gather(to.min(array.length) - 1, scala.Nil))
 
-  // Each distinct line is a symbol, numbered from zero.
-  private val symbols: java.util.HashMap[Text, Integer] = java.util.HashMap()
+  // Each distinct line is a symbol, numbered from zero: the symbols, and the symbol of each
+  // line in turn. They are found when first a run of lines is sought, or imprinted, as in most
+  // contents none ever is.
+  private lazy val numbered: (java.util.HashMap[Text, Integer], scala.Array[Int]) =
+    val symbols: java.util.HashMap[Text, Integer] = java.util.HashMap()
 
-  private val ids: scala.Array[Int] = array.map: line =>
-    val known = symbol(line)
+    val ids = array.map: line =>
+      val known = symbols.getOrDefault(line, Content.Missing).nn.intValue
 
-    if known >= 0 then known else
-      val next = symbols.size
-      symbols.put(line, Integer.valueOf(next))
-      next
+      if known >= 0 then known else
+        val next = symbols.size
+        symbols.put(line, Integer.valueOf(next))
+        next
 
+    (symbols, ids)
+
+  private def symbols: java.util.HashMap[Text, Integer] = numbered(0)
+  private def ids: scala.Array[Int] = numbered(1)
   private def symbol(line: Text): Int = symbols.getOrDefault(line, Content.Missing).nn.intValue
 
   // The imprint of the run of lines which begins the content, for each number of lines, as its

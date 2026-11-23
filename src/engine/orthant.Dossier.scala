@@ -30,12 +30,14 @@ import soundness.sortingAlgorithms.timsort
 // the source points of a space which has a sourced axis.
 case class Dossier
   ( space: Space, folios: Map[Point, Folio] = Map(), source: Optional[Source] = Unset ):
-  // Renditions are derived from each other, many times over, so each is computed once.
-  private val memo: scala.collection.mutable.HashMap[Point, Optional[Rendition]] =
-    scala.collection.mutable.HashMap()
+  // Renditions are derived from each other, many times over, so each is computed once. A
+  // dossier may be read by several tasks at once: what two of them derive at a point is the
+  // same, so it does not matter which of them is kept.
+  private val memo: scala.collection.concurrent.TrieMap[Point, Optional[Rendition]] =
+    scala.collection.concurrent.TrieMap()
 
-  private val unplaced: scala.collection.mutable.HashMap[Point, List[Int]] =
-    scala.collection.mutable.HashMap()
+  private val unplaced: scala.collection.concurrent.TrieMap[Point, List[Int]] =
+    scala.collection.concurrent.TrieMap()
 
   def hold(point: Point, folio: Optional[Folio]): Dossier =
     Dossier(space, folio.lay(folios.omit(point))(folios.define(point, _)), source)

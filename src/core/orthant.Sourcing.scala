@@ -40,9 +40,14 @@ object Sourcing:
 
     upstream(found(directory))
 
+  // The repositories which have been read, each by its path: a commit, and a tree, is the same
+  // however long it is kept, so what is read of one is kept for as long as the process runs.
+  private val repositories = scala.collection.concurrent.TrieMap[Text, Repository]()
+
   // The repository at a path. Each tree is read once, however many documents are beneath it,
   // and one thing is read at a time.
-  def upstream(directory: Text): Repository = Repository(directory)
+  def upstream(directory: Text): Repository =
+    repositories.getOrElseUpdate(directory, Repository(directory))
 
   // The repository which a store's source names: at a path beneath the store's directory, or
   // else the repository which that directory is in.
@@ -127,7 +132,8 @@ object Sourcing:
         case _ =>
           abort(Workspace.Error(Workspace.Reason.Lineage(revision, entry.name)))
 
-    entry.value.filter(_.commit == hash).head.lay(insert): value => (store, value.name)
+    entry.value.filter(_.commit == hash).head.lay(store.admitted.getOrElseUpdate(hash, insert)):
+      value => (store, value.name)
 
   // The point which `from` becomes when moved to each value a term names, in a store which has
   // those values: on a sourced axis a term may be any revision of the source, and the commit it
@@ -135,8 +141,17 @@ object Sourcing:
   def locate(store: Workspace, from: Point, terms: List[Text])
   :   (Workspace, Point) raises Store.Error raises Workspace.Error =
 
-    terms.fold((store, from)): (state, term) =>
-      val (store, point) = state
+    val (next, named) = admitting(store, terms)
+    (next, next.locate(from, named))
+
+  // The store in which each term which is a revision of the source, and not a value, names a
+  // value, with the terms as they name the values of that store: such a term is replaced by
+  // the value which the commit is made, on the sourced axis.
+  def admitting(store: Workspace, terms: List[Text])
+  :   (Workspace, List[Text]) raises Store.Error raises Workspace.Error =
+
+    terms.fold((store, List[Text]())): (state, term) =>
+      val (store, named) = state
 
       val revision: Optional[Text] = sourced(store).let: entry =>
         term.cut(t"=") match
@@ -147,9 +162,9 @@ object Sourcing:
             if store.space.axes.exists { axis => store.named(axis.name, term).present } then Unset
             else term
 
-      revision.lay((store, store.locate(point, List(term)))): revision =>
+      revision.lay((store, named + List(term))): revision =>
         val (next, name) = admit(store, revision)
-        (next, next.locate(point, List(t"${sourced(store).let(_.name).or(t"")}=$name")))
+        (next, named + List(t"${sourced(store).let(_.name).or(t"")}=$name"))
 
   // The store in which the value checked out on the sourced axis is a value, as it is not if
   // the commit checked out is one which the configuration does not have.
@@ -164,10 +179,24 @@ object Sourcing:
     if sourced(store).absent || Workspace.settings(store.root) == store.settings then store
     else store.inscribe()
 
-  // A repository on disk.
+  // A repository on disk. What is read of it is kept: the entries of each tree, the tree of
+  // each commit, and the parents and the generation of each commit of the history which an
+  // ancestry question reads.
   class Repository(directory: Text) extends Upstream:
-    private val roots = scala.collection.mutable.HashMap[Text, Text]()
-    private val trees = scala.collection.mutable.HashMap[Text, List[(Text, Text, Perusable.Kind)]]()
+    private val roots = scala.collection.concurrent.TrieMap[Text, Text]()
+
+    private val trees =
+      scala.collection.concurrent.TrieMap[Text, List[(Text, Text, Perusable.Kind)]]()
+
+    // The parents of each commit which has been read, and its generation: one more than the
+    // greatest of its parents', so that no commit is an ancestor of one whose generation is
+    // not greater than its own.
+    private val parents = scala.collection.concurrent.TrieMap[Text, List[Text]]()
+    private val generations = scala.collection.concurrent.TrieMap[Text, Int]()
+
+    // The commits at which a shallow history ends, as they were when the parents were read:
+    // the parents of such a commit are not in the repository, and it is taken to have none.
+    private var boundary: Optional[Text] = Unset
 
     def name: Text = directory
 
@@ -187,9 +216,9 @@ object Sourcing:
 
     // The entries of a tree: the name, the hash and the kind of each.
     private def tree(hash: Text): List[(Text, Text, Perusable.Kind)] raises Store.Error =
-      reading:
-        trees.getOrElseUpdate(hash, locally:
-          directory.as[Path on Local].open[Git.Repo](): repository ?=>
+      trees.get(hash).getOrElse:
+        reading:
+          val found = directory.as[Path on Local].open[Git.Repo](): repository ?=>
             repository.treeAt(Git.Hash.unsafe(hash)).map: entry =>
               import Git.Object.Tree.Mode
 
@@ -198,13 +227,19 @@ object Sourcing:
                 case Mode.Regular | Mode.Executable => Perusable.Kind.File
                 case _                              => Perusable.Kind.Other
 
-              (entry.name, entry.hash.text, kind))
+              (entry.name, entry.hash.text, kind)
+
+          trees(hash) = found
+          found
 
     private def root(commit: Text): Text raises Store.Error =
-      reading:
-        roots.getOrElseUpdate(commit, locally:
-          directory.as[Path on Local].open[Git.Repo](): repository ?=>
-            repository.commitAt(Git.Hash.unsafe(commit)).tree.text)
+      roots.get(commit).getOrElse:
+        reading:
+          val found = directory.as[Path on Local].open[Git.Repo](): repository ?=>
+            repository.commitAt(Git.Hash.unsafe(commit)).tree.text
+
+          roots(commit) = found
+          found
 
     // The hash and the kind of what is at a path in a commit's tree.
     private def find(commit: Text, path: Text)
@@ -230,10 +265,71 @@ object Sourcing:
           directory.as[Path on Local].open[Git.Repo](): repository ?=>
             repository.blobAt(Git.Hash.unsafe(hash))
 
+    // Whether `upper` is `lower` or an ancestor of it. The history beneath a commit is read
+    // once, to give each commit in it a generation; a question is then answered from the
+    // commits between the two, since none whose generation is not greater than `upper`'s
+    // descends from it.
     def ancestor(upper: Text, lower: Text): Boolean raises Store.Error =
       upper == lower || reading:
+        val ends = Disk.read(t"$directory/.git/shallow").or(Disk.read(t"$directory/shallow"))
+
+        if ends != boundary then
+          parents.clear()
+          generations.clear()
+          boundary = ends
+
+        val shallow: scala.collection.immutable.Set[Text] =
+          ends.lay(Nil)(Store.lines(_)).stdlib.toSet
+
         directory.as[Path on Local].open[Git.Repo](): repository ?=>
-          repository.isAncestor(Git.Hash.unsafe(upper), Git.Hash.unsafe(lower))
+          def above(commit: Text): List[Text] = parents.get(commit).getOrElse:
+            val found =
+              if shallow(commit) then Nil
+              else repository.commitAt(Git.Hash.unsafe(commit)).parents.map(_.text)
+
+            parents(commit) = found
+            found
+
+          def generation(commit: Text): Int = generations.getOrElse(commit, 0)
+
+          // Each commit is given its generation after its parents have theirs.
+          @scala.annotation.tailrec
+          def number(todo: List[Text]): Unit = todo match
+            case commit :: rest =>
+              if generations.contains(commit) then number(rest) else
+                val known = above(commit)
+                val wanting = known.filter(!generations.contains(_))
+
+                if wanting.nil then
+                  val most = known.fold(0): (most, parent) => most.max(generation(parent))
+                  generations(commit) = most + 1
+                  number(rest)
+                else
+                  number(wanting + todo)
+
+            case _ =>
+              ()
+
+          // A commit which the repository does not have, as a shallow one may not, is an
+          // ancestor of none which it has.
+          def held: Boolean =
+            generations.contains(upper) || repository.exists(Git.Hash.unsafe(upper))
+
+          if held then number(List(upper, lower))
+          val floor = generation(upper)
+          val seen = scala.collection.mutable.HashSet[Text]()
+
+          @scala.annotation.tailrec
+          def descends(todo: List[Text]): Boolean = todo match
+            case commit :: rest =>
+              if commit == upper then true
+              else if generation(commit) <= floor || !seen.add(commit) then descends(rest)
+              else descends(above(commit) + rest)
+
+            case _ =>
+              false
+
+          held && descends(List(lower))
 
     def entries(commit: Text, directory: Text): List[Perusable.Entry] raises Store.Error =
       find(commit, directory).lay(Nil): (hash, kind) =>
