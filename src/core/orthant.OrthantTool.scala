@@ -129,6 +129,11 @@ object OrthantTool:
   private val CheckinCommand =
     Subcommand(t"checkin", t"store the edited documents: [<path>…]", group = TreeGroup)
 
+  private val EditCommand =
+    Subcommand
+      ( t"edit", t"edit a document at a point, and store the result: <path> [<value>…]",
+        group = TreeGroup )
+
   private val LiveCommand =
     Subcommand
       ( t"live", t"say where the live tree is, or make a directory the live tree: [<directory>]",
@@ -458,6 +463,15 @@ object OrthantTool:
 
           reach.lay(usage(checkinSynopsis))(run(_))
 
+      case EditCommand() :: rest =>
+        val offered = values
+        operands(rest).each(_.select(offered))
+
+        execute:
+          operands(rest).map(_()) match
+            case path :: values => attempt(edit(path, values))
+            case _              => usage(t"orthant edit <path> [<value>…]")
+
       case LiveCommand() :: rest =>
         execute:
           operands(rest).map(_()) match
@@ -507,6 +521,17 @@ object OrthantTool:
           t"With --live, the documents being written are in a directory of their own, which is",
           t"committed and edited freely, and `orthant tag` stores them. The working tree, in",
           t"which any other point is checked out, is then .orthant/work/tree unless one is named." )
+
+    case t"edit" =>
+      List
+        ( t"orthant edit <path> [<value>…]",
+          t"",
+          t"Opens a document in an editor, as it is at the point checked out moved to the values",
+          t"given, and stores what the editor leaves, as `orthant checkin` would. A document",
+          t"which derives from another is shown as an indirect view, in which a `? ` line is",
+          t"translated by adding `+ ` lines beneath it. The working tree has no part in it. The",
+          t"editor is $$VISUAL, or $$EDITOR, or vi. If what is left cannot be stored, it is kept,",
+          t"and `orthant edit` opens it again." )
 
     case t"live" =>
       List
@@ -739,6 +764,72 @@ object OrthantTool:
       Out.println(t"Its live tree is $directory/; `orthant tag` stores what is written there.")
 
     Exit.Ok
+
+  // The view of a document at a point is written to a file of the store's own, which an
+  // editor is run on, on the terminal the command was given at; what it leaves is stored as a
+  // check-in of that view. A file left by an edit which could not be stored is opened again,
+  // as long as the store's document has not changed since.
+  private def edit(path: Text, values: List[Text])
+    ( using cli: Cli, stdio: Stdio, resident: Resident )
+  :   Raising[Refused.type | Exit] =
+
+    val (store, point) = locate(open(), values)
+    val name = document(store, path)
+    val rooted = store.space.storageAxis(point).absent
+    val mode = if rooted then Worktree.Mode.Plain else Worktree.Mode.Beside
+    val place = describe(store, point)
+
+    Worktree.render(store, name, point, mode).lay(absent(path, place)): shown =>
+      val folder = t"${store.work}/edit/${store.name(point)}"
+      val file = t"$folder/$name"
+      val copy = t"$folder/$name.shown"
+      val kept = Disk.read(copy) == Store.text(shown) && Disk.exists(file)
+
+      if !kept then
+        Disk.write(file, Store.text(shown), store.staging)
+        Disk.write(copy, Store.text(shown), store.staging)
+
+      val editor =
+        cli.environment.variable(t"VISUAL").or(cli.environment.variable(t"EDITOR")).or(t"vi")
+
+      // The editor may be a command with arguments of its own, so a shell runs it.
+      val status = resident.terminal(t"sh", List(t"-c", t"$editor \"$$1\"", t"sh", file), here)
+      val edited = Disk.read(file).let(Store.lines(_)).or(shown)
+
+      def discard(): Unit =
+        Disk.remove(file, store.work)
+        Disk.remove(copy, store.work)
+
+      // The launcher answers 127 where it has no terminal to give the editor, as in a pipe.
+      val ending =
+        if status == 127 then t"could not be run, or there is no terminal to run it on"
+        else t"ended with the status $status"
+
+      if status != 0 then
+        Err.println(t"orthant: the editor, $editor, $ending")
+        Err.println(t"  nothing is stored; what it left is kept in $file")
+        Refused
+      else if edited == shown then
+        discard()
+        Out.println(t"At $place")
+        Out.println(t"  nothing was changed in $name")
+        Exit.Ok
+      else Disk.locked(store.lock):
+        val (fresh, point) = locate(open(), values)
+
+        recover:
+          case error: Workspace.Error =>
+            Err.println(t"orthant: ${error.bolt.label} ${Orthant.prose(error)}")
+            Err.println(t"  what was written is kept; `orthant edit` opens it again")
+            Refused
+
+        . protect:
+            val tally = Worktree.amend(fresh, name, point, mode, shown, edited)
+            tally.saved.let(Kept.hold(_))
+            discard()
+            Out.println(t"At $place")
+            tallied(fresh, tally, false)
+            Exit.Ok
 
   private def live(directory: Optional[Text])(using Cli, Stdio): Raising[Exit] =
     val store = open()

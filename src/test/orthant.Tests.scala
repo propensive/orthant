@@ -1808,6 +1808,41 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == (t"↯/o.2.6", t"↯/o.2.10"))
 
+      test(m"A view which an editor has changed is stored with no working tree"):
+        val store = fixture()
+        write(store, t"guide.md", t"Install it.\n\nRun it.\n")
+        val stored = tagged(store)
+        val french = at(stored, t"fr", t"next")
+        val shown = Worktree.render(stored, t"guide.md", french, Worktree.Mode.Beside).or(Nil)
+
+        val edited = shown.bind: line =>
+          if line == t"? Run it." then List(line, t"+ Lancez-le.") else List(line)
+
+        val tally = Worktree.amend(stored, t"guide.md", french, Worktree.Mode.Beside, shown, edited)
+        val after = Workspace.load(store.root)
+
+        ( shown, after.content(t"guide.md", french), tally.effects.map(_.pending),
+          Disk.exists(t"${stored.tree}/guide.md") )
+
+      . assert: found =>
+          found ==
+            ( List(t"? Install it.", t"", t"? Run it."), List(t"Install it.", t"", t"Lancez-le."),
+              List(-1), false )
+
+      test(m"A view of a document which has since changed in the store is not stored"):
+        val store = translated()
+        val french = at(store, t"fr", t"next")
+        val shown = Worktree.render(store, t"guide.md", french, Worktree.Mode.Beside).or(Nil)
+        write(store, t"guide.md", t"Install it.\n\nRun it now.\n")
+        val later = tagged(store)
+
+        val english = at(later, t"next")
+
+        ( code(Worktree.amend(later, t"guide.md", french, Worktree.Mode.Beside, shown, shown)),
+          code(Worktree.amend(later, t"guide.md", english, Worktree.Mode.Plain, Nil, Nil)) )
+
+      . assert(_ == (t"↯/o.4.3", t"↯/o.4.17"))
+
       test(m"Only one value is the working value"):
         val store = fixture()
         val moved = Live.working(store.value(t"release", t"later", t"next"), t"release", t"later")

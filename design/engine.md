@@ -355,6 +355,11 @@ last stored.
   <name>` is refused (`↯/o.7.11`).
 - **The working tree is never at the live tree's point** (`↯/o.4.17`): those documents have
   one place in which they are edited.
+- **An edit without a tree.** `orthant edit` writes a view of one document to a file within
+  `.orthant/work/edit/`, has the launcher run an editor on it on the client's own terminal
+  (the daemon has none), and stores what is left through `Worktree.amend`, which is a check-in
+  of that view. The store's lock is not held while the editor runs; the view is compared
+  with the store's again before anything is stored (`↯/o.4.3`).
 - **Neither member bears on content.** `live` and `working` say where the tool looks, and a
   reader may ignore both.
 

@@ -1266,6 +1266,8 @@ view.tel            the point which is checked out, and the mode of the view
 pristine/<path>     each document as it was checked out
 lock                held while the tool changes the store or the working tree
 staging             a file being written, before it is moved into place
+edit/<point>/<path> a view which an editor is at work on, or has left unstored
+tree/               the working tree, in a store which was made with a live tree
 ```
 
 `view.tel` is a TEL document with a `mode`, which is `direct`, `indirect` or `change`, and one

@@ -107,6 +107,7 @@ orthant tag                              # store doc/ at `next`; the translation
 orthant checkout fr next --indirect      # a translation, in the working tree: .orthant/work/tree/
 orthant tag v1                           # store doc/, and release it: `next` begins again beneath v1
 orthant live [<directory>]               # where the live tree is; or give a store one
+orthant edit guide/intro.md fr           # translate one document in $EDITOR, and store the result
 ```
 
 The store's first release is the root of its axis, and each later one holds what changed since
@@ -122,6 +123,12 @@ the store only by `orthant tag --remove`.
 is stored at it, and a new working value of its old name begins beneath it, with nothing stored
 at it. On an axis which follows the git repository, the tracked branch's value is the working
 value without being told, and the release is made by tagging the commit and `orthant sync`.
+
+`orthant edit <path> [<value>…]` needs no working tree at all, in any store. It opens the
+document at the point named, as an indirect view where it derives from another, in `$VISUAL`
+or `$EDITOR`, on the terminal the command was given at, and stores what the editor leaves as a
+check-in of that view would. What cannot be stored is kept, and is opened again by the same
+command.
 
 Every other point is checked out in the working tree, as ever; the live tree's own point is
 not, since its documents are edited where they are. Two branches of a repository which each

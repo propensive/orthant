@@ -359,6 +359,24 @@ object Worktree:
 
     Tally(stored, skipped, effects(store, after, stored.map(_.document)), kept)
 
+  // Stores one document at a point from the lines of a view of it in the mode given, with no
+  // part for the working tree: what `orthant edit` does with what an editor leaves. The view
+  // must be of the document as the store has it now.
+  def amend
+    ( store: Workspace, document: Text, point: Point, mode: Mode, shown: List[Text],
+      edited: List[Text] )
+  :   Tally raises Store.Error raises Workspace.Error raises Axis.Error =
+
+    apart(store, point)
+
+    if render(store, document, point, mode) != shown
+    then abort(Workspace.Error(Workspace.Reason.Moved(document)))
+
+    val dossier = revise(store, document, point, mode, Reach.Below, edited)
+    val change = Change(document, Kind.Modified)
+    val after = store.supposing(document, dossier)
+    Tally(List(change), Nil, effects(store, after, List(document)), store.save(document, dossier))
+
   // What becomes of each point when `documents` change from what one store has to what
   // another has; the points to which nothing happens are left out.
   private[orthant] def effects(before: Workspace, after: Workspace, documents: List[Text])
