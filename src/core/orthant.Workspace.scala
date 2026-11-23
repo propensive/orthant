@@ -158,6 +158,9 @@ object Workspace:
       case Reason.Kind(_)                => Orthant.bolt(7, 4)
       case Reason.Exists(_)              => Orthant.bolt(5, 2)
 
+  // How many documents `survey` derives at once.
+  private val abreast: Int = 4
+
   private def folder(root: Text): Text = t"$root/.orthant"
   private def config(root: Text): Text = t"$root/.orthant/config.tel"
 
@@ -240,6 +243,23 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted, held.upstr
 
   private def holding(dossiers: Map[Text, Dossier]): Workspace =
     Workspace(root, new Store(settings, space, dossiers, omitted, upstream))
+
+  // What this store becomes when a commit is made a value of its sourced axis, and that
+  // value's name: found once for each commit, and what is derived in that store is kept with it.
+  private[orthant] val admitted: scala.collection.concurrent.TrieMap[Text, (Workspace, Text)] =
+    scala.collection.concurrent.TrieMap()
+
+  // This store, with the dossier which another has for each document of which the two hold
+  // the same records: what has been derived of the document in the other is not derived again
+  // in this one. The two must have one configuration, and one source, for any to be shared.
+  def sharing(former: Workspace): Workspace =
+    if former.settings != settings || former.upstream != upstream then this else
+      val shared = documents.fold(dossiers): (shared, document) =>
+        former.dossiers.at(document).lay(shared): other =>
+          if other.folios == dossier(document).folios then shared.define(document, other)
+          else shared
+
+      Workspace(root, new Store(settings, former.space, shared, omitted, upstream))
 
   // The point which `from` becomes when moved to each value given, as `axis=value`, or as a
   // value alone where one axis has it.
@@ -392,6 +412,31 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted, held.upstr
       async(points.each { point => safely(held.rendition(point)) })
 
     tasks.each: task => safely(task.await())
+
+  // Everything which makes the store invalid, as `faults` gives it. The documents are derived
+  // a few at a time, each in a task of its own, and what is derived of one is given up when
+  // its points have been looked at: every document derived at every point, and all of it held
+  // at once, is more than a store of many points leaves room for.
+  def survey()(using Monitor): List[Store.Error] raises Store.Error =
+    def apart(document: Text): List[Store.Error] | Store.Error =
+      val dossiers = Map[Text, Dossier]().define(document, dossier(document).copy())
+      val alone = new Store(settings, space, dossiers, Nil, upstream)
+
+      recover:
+        case error: Store.Error => error
+
+      . protect(alone.unplaced(List(document)))
+
+    val found: List[List[Store.Error] | Store.Error] =
+      List.from(documents.stdlib.grouped(Workspace.abreast)).bind: group =>
+        val tasks = List.from(group).map: document => (document, async(apart(document)))
+        tasks.map: (document, task) => safely(task.await()).or(apart(document))
+
+    val unplaced = found.bind:
+      case error: Store.Error => abort(error)
+      case faults: List[Store.Error] @unchecked => faults
+
+    omitted + descents + unplaced
 
   // The store in which a document has the dossier given, with nothing written.
   def supposing(document: Text, dossier: Dossier): Workspace =

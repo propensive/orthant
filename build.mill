@@ -240,6 +240,14 @@ object orthant extends Project:
   object core extends Component(reader, engine), Publishing:
     def mvnDeps = Task(settings.coreDeps(deps.soundness()))
 
+    // The version this build is, as the resource `orthant/version`, which `orthant --version`
+    // reads: a build which is not a release has no build id to tell it by.
+    def versionResource = Task:
+      os.write(Task.dest / "orthant" / "version", publishVersion(), createFolders = true)
+      PathRef(Task.dest)
+
+    override def resources = Task { super.resources() ++ Seq(versionResource()) }
+
   // The invocation point, ALONE in its own module (`src/launcher/orthant_launcher.scala` — just
   // the `@main def orthant = externalize(OrthantTool.run())`). It depends on `core`, `reader` and
   // `engine` NOT as Mill `moduleDeps` but as PUBLISHED coordinates, so coursier puts the byte-identical

@@ -129,6 +129,8 @@ object OrthantTool:
   private val HelpFlag =
     Flag[Unit](t"help", false, List('h'), t"describe the available subcommands and options")
 
+  private val VersionFlag = Flag[Unit](t"version", false, Nil, t"say which version this is")
+
   private val LanguageFlag =
     Flag[Unit](t"language", false, Nil, t"the axis's values are languages and their dialects")
 
@@ -167,7 +169,12 @@ object OrthantTool:
       ( t"origin", false, Nil,
         t"store each change at the value of the axis which first had the lines it changes" )
 
-  private val valueFlags: List[Flag] = List(OnlyFlag, SinceFlag, OriginFlag)
+  private val AlongFlag =
+    Flag[Text]
+      ( t"along", false, Nil,
+        t"export at every value of the axis, each into a directory of its name" )
+
+  private val valueFlags: List[Flag] = List(OnlyFlag, SinceFlag, OriginFlag, AlongFlag)
 
   private val StrictFlag =
     Flag[Unit]
@@ -231,6 +238,7 @@ object OrthantTool:
   // in the `launcher` module, which depends on this module as a published coordinate.
   def run(): Unit = cli:
     val help = HelpFlag().present
+    val version = VersionFlag().present
     val upgrade = if SelfUpgrade.available.present then UpgradeCommand else HiddenUpgrade
 
     // What the launcher did with an upgrade staged earlier, and the daily check for a newer
@@ -244,6 +252,11 @@ object OrthantTool:
         ()
 
     arguments match
+      case _ if version =>
+        execute:
+          Out.println(t"orthant ${SelfUpgrade.current.or(t"of an unknown version")}")
+          Exit.Ok
+
       case _ if help =>
         val topic = operands(arguments).head.let(_())
 
@@ -331,11 +344,18 @@ object OrthantTool:
 
       case ExportCommand() :: rest =>
         val strict = StrictFlag().present
+        val along = valued(AlongFlag, t"axis")
+        val extra = surplus
+
+        // The operands are those which are not the value of the flag.
+        def named: List[Text] =
+          (operands(rest).filter { argument => along.lay(true)(_ != argument()) } + extra).map(_())
+          . distinct
 
         execute:
-          operands(rest).map(_()) match
-            case directory :: values => attempt(publish(directory, values, strict))
-            case _                   => usage(t"orthant export <directory> [<value>…] [--strict]")
+          named match
+            case directory :: values => attempt(publish(directory, values, strict, along))
+            case _                   => usage(exportSynopsis)
 
       case ConfirmCommand() :: rest =>
         execute(attempt(confirm(operands(rest).map(_()))))
@@ -611,7 +631,7 @@ object OrthantTool:
   private def here(using cli: Cli): Text = cli.workingDirectory.directory()
 
   private def open()(using Cli): Workspace raises Store.Error raises Workspace.Error =
-    Sourcing.viewing(Workspace.open(Workspace.find(here)))
+    Sourcing.viewing(Kept.open(Workspace.find(here)))
 
   // The point at the values given, from the point checked out, in the store which has them: a
   // commit of an axis's source which is not yet a value of it is made one, in memory.
@@ -738,8 +758,7 @@ object OrthantTool:
 
   private def check()(using Cli, Stdio, Monitor): Raising[Refused.type | Exit] =
     val store = Workspace.inspect(Workspace.find(here))
-    store.prepare(store.points)
-    val faults = store.faults
+    val faults = store.survey()
 
     faults.each: fault => Err.println(t"orthant: ${fault.bolt.label} ${Orthant.prose(fault)}")
 
@@ -895,15 +914,33 @@ object OrthantTool:
       if found.nil then Out.println(t"  nothing is stale")
       Exit.Ok
 
-  private def publish(directory: Text, values: List[Text], strict: Boolean)
+  private val exportSynopsis: Text =
+    t"orthant export <directory> [<value>…] [--along <axis>] [--strict]"
+
+  // With `along`, the documents at every value of that axis, the other axes as at the point,
+  // each value's in a directory of its name: one store serves them all, so what a value
+  // inherits is derived once, and not again for each value which inherits it.
+  private def publish
+    ( directory: Text, values: List[Text], strict: Boolean, along: Optional[Text] = Unset )
     ( using Cli, Stdio, Monitor )
   :   Raising[Exit] =
 
     val (store, point) = locate(open(), values)
-    store.prepare(List(point))
     val target = if directory.starts(t"/") then directory else t"$here/$directory"
-    val count = Worktree.publish(store, point, target, strict)
-    Out.println(t"Exported ${documents(count)} at ${describe(store, point)} to $directory")
+
+    along.lay:
+      store.prepare(List(point))
+      val count = Worktree.publish(store, point, target, strict)
+      Out.println(t"Exported ${documents(count)} at ${describe(store, point)} to $directory")
+
+    . apply: name =>
+        val points = Worktree.along(store, point, name)
+        store.prepare(points.map(_(1)))
+
+        Worktree.publish(store, points, target, strict).each: (value, count) =>
+          val folder = t"$directory/${Store.folded(value)}"
+          Out.println(t"Exported ${documents(count)} at $value to $folder")
+
     Exit.Ok
 
   private def label(kind: Worktree.Kind): Text = kind match
@@ -968,8 +1005,8 @@ object OrthantTool:
 
   // With no values and without `all`, the point checked out; otherwise every point at or below
   // the values. The edits which are not checked in are counted as if they were.
-  private def status(values: List[Text], all: Boolean)(using Cli, Stdio, Monitor): Raising[Exit] =
-    val store = open()
+  private def status(terms: List[Text], all: Boolean)(using Cli, Stdio, Monitor): Raising[Exit] =
+    val (store, values) = Sourcing.admitting(open(), terms)
     val target = Worktree.view(store)
     Out.println(t"At ${describe(store, target)}${shown(store, Worktree.mode(store))}")
     val changes = Worktree.changes(store)
@@ -1032,8 +1069,8 @@ object OrthantTool:
       val works = store.documents.map(Survey.own(store, _, point)).filter(_.wanting)
       if works.nil then Nil else List((point, works))
 
-  private def todo(values: List[Text], take: Boolean)(using Cli, Stdio, Monitor): Raising[Exit] =
-    val store = open()
+  private def todo(terms: List[Text], take: Boolean)(using Cli, Stdio, Monitor): Raising[Exit] =
+    val (store, values) = Sourcing.admitting(open(), terms)
 
     if take then Disk.locked(store.lock):
       agenda(store, values).head.lay(Out.println(t"Nothing wants doing.")): (point, works) =>
@@ -1188,10 +1225,18 @@ object OrthantTool:
     ( using Cli, Stdio )
   :   Raising[Exit] =
 
-    val store = open()
+    // The value which `--since` names may be a revision of the source which is not yet a value.
+    val (store, since) = reach match
+      case Worktree.Reach.Since(value) =>
+        val (store, named) = Sourcing.admitting(open(), List(value))
+        (store, named.head.let(Worktree.Reach.Since(_)).or(reach))
+
+      case _ =>
+        (open(), reach)
 
     Disk.locked(store.lock):
-      val tally = Worktree.checkin(store, paths.map(document(store, _)), remove, dry, reach)
+      val tally = Worktree.checkin(store, paths.map(document(store, _)), remove, dry, since)
+      tally.saved.let(Kept.hold(_))
       val verb = if dry then t"would store" else t"stored"
 
       tally.stored.each: change =>

@@ -39,6 +39,9 @@ import soundness.textSanitizers.skipSanitizer
 // The few things Orthant does to a disk, each naming a file by its absolute path as text, and
 // each failing with a `Store.Error` which names the file.
 object Disk:
+  case class Stamp(written: Long, size: Long, key: Text)
+  type Stamps = scala.collection.immutable.Map[Text, Stamp]
+
   private type Raising[result] =
     (Tactic[Io.Error], Tactic[Path.Error], Tactic[Truncation.Error]) ?=> result
 
@@ -126,6 +129,55 @@ object Disk:
 
     val path = directory.as[Path on Local]
     if !path.existent() then Nil else recur(path, t"").order: name => name
+
+  // What tells whether a file, and everything beneath a directory, is as it was: for the file,
+  // for the directory, and for each file and each directory beneath it, when it was last
+  // written, its size, and what the filesystem knows it by. A directory is written when a file
+  // comes to be in it, or to be gone from it. Nothing is read of any of them but that, and one
+  // which is not there has a stamp which says so.
+  def stamps(file: Text, directory: Text): Stamps raises Store.Error =
+    import java.nio.file as jnf
+    import jnf.attribute.BasicFileAttributes as Attributes
+
+    val found = scala.collection.immutable.Map.newBuilder[Text, Stamp]
+
+    val visitor = new jnf.SimpleFileVisitor[jnf.Path]:
+      override def preVisitDirectory(path: jnf.Path | Null, attributes: Attributes | Null)
+      :   jnf.FileVisitResult =
+
+        found += path.nn.toString.tt -> stamp(attributes.nn)
+        jnf.FileVisitResult.CONTINUE
+
+      override def visitFile(path: jnf.Path | Null, attributes: Attributes | Null)
+      :   jnf.FileVisitResult =
+
+        found += path.nn.toString.tt -> stamp(attributes.nn)
+        jnf.FileVisitResult.CONTINUE
+
+    try
+      val folder = jnf.Paths.get(directory.s).nn
+      found += file -> stamp(file)
+      found += directory -> stamp(directory)
+      if jnf.Files.exists(folder) then jnf.Files.walkFileTree(folder, visitor)
+      found.result()
+    catch case error: java.io.IOException =>
+      abort(Store.Error(Store.Reason.Access(directory, Optional(error.getMessage).or("").tt)))
+
+  // Whether everything which was stamped is as it was. Each is looked at alone, and no
+  // directory is listed: what has come to be in one since has written it.
+  def unchanged(stamps: Stamps): Boolean = stamps.forall: (path, former) =>
+    stamp(path) == former
+
+  private def stamp(attributes: java.nio.file.attribute.BasicFileAttributes): Stamp =
+    val written = attributes.lastModifiedTime.nn.to(java.util.concurrent.TimeUnit.NANOSECONDS)
+    Stamp(written, attributes.size, Optional(attributes.fileKey).let(_.toString.tt).or(t""))
+
+  private def stamp(path: Text): Stamp =
+    import java.nio.file as jnf
+    import jnf.attribute.BasicFileAttributes as Attributes
+
+    try stamp(jnf.Files.readAttributes(jnf.Paths.get(path.s), classOf[Attributes]).nn)
+    catch case error: java.io.IOException => Stamp(-1L, -1L, t"")
 
   // Runs the block while holding the lock file, which keeps other invocations out.
   def locked[result](file: Text)(block: => result): result raises Store.Error =

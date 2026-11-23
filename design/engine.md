@@ -212,6 +212,30 @@ gave it.
   changes a document refuses it if any of its hunks, at any point, has none. `status` and `todo`
   count such a hunk among what wants doing.
 
+## What is kept between commands
+
+The tool runs as a daemon, and a command is a call to it. A store which a call has read is
+kept (`Kept`), with a stamp of its configuration and of each of its record files: when each
+was written, its size, and what the filesystem knows it by.
+
+- **A store whose files are as they were is not read again.** The next call is given the same
+  store, and with it everything which was derived in it: a rendition is derived once in the
+  life of the daemon, and not once in each call.
+- **A store of which a file has changed is read again**, and takes from the one before the
+  dossier of each document whose records are the same, so what was derived of those documents
+  is kept. A check-in keeps the store as it leaves it.
+- **Calls share what is kept**, so what a dossier and a store remember of what they derived
+  may be read and written by several tasks at once. Two tasks which derive the same thing
+  derive the same value, and either is kept.
+- **A store is kept softly**: the memory it takes is given up when it is wanted for anything
+  else, and the store is then read again.
+
+The library is unchanged by this: `Workspace.open` reads a store, and keeps nothing.
+
+`check` derives every document at every point, which is more than can be held at once where
+the points are many: it derives a few documents at a time, each in a task of its own, and gives
+up what it derived of each when its points have been looked at (`Workspace.survey`).
+
 ## What wants doing
 
 The work in a document at a point is its lines yet to be translated, its stale passages, and
@@ -229,6 +253,10 @@ is best done there: only the rest is the point's own.
   (`?`), stale passages (`!`) and faulty hunks (`x`), coloured by the worst of them.
 - A check-in reports, for each point whose own work it changed, by how much.
 - A strict export is refused while any document at the point has work.
+- An export along an axis writes the documents at every value of that axis, the other axes as
+  at the point, each value's in a directory of its name. One store serves them all, so what the
+  values inherit from each other is derived once: a chain of values costs what its last value
+  does, and not that for each of them. A strict one writes nothing if any of them has work.
 
 A stale passage is reported by its line in the working tree, in whatever mode that is shown,
 at the point checked out, and by its line in the plain document elsewhere.
@@ -279,6 +307,12 @@ each later commit as any hunk is onto a storage parent which has changed.
   and the configuration is not written. The commit must descend from the axis's root
   (`↯/o.7.8`), and where the repository's history is shallow and does not reach it, that is
   said (`↯/o.7.9`).
+- **The history is read once.** Whether one commit is an ancestor of another is asked of
+  every value when a commit is placed, and of every value by `check`. The repository gives
+  each commit it reads a generation, one more than the greatest of its parents', and keeps it
+  with the commit's parents for as long as the process runs, as a commit never changes. No
+  commit descends from one whose generation is not less than its own, so a question is
+  answered from the commits between the two, and the first one asked is what reads the history.
 - **A check-in at such a commit makes it a value**, with the configuration written then. Its
   children among the values, which were its parent's, inherit what was checked in, as any
   point below a check-in does.

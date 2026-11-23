@@ -204,7 +204,11 @@ object Rebase:
     placed.map(carrier.alone(_, _))
 
   // The hunks, each at the position its replaced lines begin in `old`, carried onto `next`.
+  // Where there are none, there is nothing to carry, and the two contents are not compared.
   def apply(placed: List[(Int, Hunk)], old: Content, next: Content): List[Outcome] =
+    if placed.nil then Nil else carry(placed, old, next)
+
+  private def carry(placed: List[(Int, Hunk)], old: Content, next: Content): List[Outcome] =
     val carrier = Carrier(old, next)
     import carrier.{classify, merge}
 

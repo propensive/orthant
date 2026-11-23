@@ -47,11 +47,13 @@ orthant confirm [paths…]                 # mark stale passages as checked, unc
 orthant axis prefer language parent      # what a stale passage shows; before content exists
 orthant cat guide/intro.md fr/CA         # a document at a point, without checking it out
 orthant export site fr v2 [--strict]     # the plain documents at a point; --strict wants no work left
+orthant export site fr --along release   # those at every value of an axis, each in a directory of its name
 orthant <command> --help                 # how a command is written, and what it does
 orthant check                            # verify everything the store holds
 orthant migrate                          # make a store of an earlier format one of this format
 orthant install                          # tab-completions for the shell
 orthant upgrade                          # replace this executable with the newest release
+orthant --version                        # which version this is
 ```
 
 An axis can follow the git repository the store is in:
