@@ -1599,6 +1599,225 @@ object Tests extends Suite(m"Orthant tests"):
 
       . assert(_ == t"↯/o.4.1")
 
+    suite(m"A live tree"):
+      def scratch(): Text = java.nio.file.Files.createTempDirectory("orthant").nn.toString.nn.tt
+
+      // A store whose live tree is `doc`, at the working value `next`, beneath the release `v1`.
+      def fixture(): Workspace =
+        val store =
+          Workspace.init(scratch(), t".orthant/work/tree", t"doc")
+          . axis(t"language", t"en", t"language").value(t"language", t"fr", Unset)
+          . axis(t"release", t"v1", t"custom").value(t"release", t"next", Unset)
+
+        Disk.directory(t"${store.root}/doc")
+        Live.working(store, t"release", t"next")
+
+      def write(store: Workspace, document: Text, content: Text): Unit =
+        Disk.write(t"${store.root}/doc/$document", content, store.staging)
+
+      def code(block: => Any): Text =
+        try
+          block
+          t""
+        catch
+          case error: Store.Error     => error.bolt.text
+          case error: Workspace.Error => error.bolt.text
+
+      def at(store: Workspace, values: Text*): Point =
+        store.locate(store.space.root, List.from(values))
+
+      // The live tree stored, and the store read again from the disk.
+      def tagged(store: Workspace): Workspace =
+        Live.store(store, Nil, false, false)
+        Workspace.load(store.root)
+
+      // A document written and stored, and its translation checked in from the working tree.
+      def translated(): Workspace =
+        val store = fixture()
+        write(store, t"guide.md", t"Install it.\n\nRun it.\n")
+        val stored = tagged(store)
+        Worktree.checkout(stored, at(stored, t"fr", t"next"), false)
+        Disk.write(t"${stored.tree}/guide.md", t"Installez-le.\n\nLancez-le.\n", stored.staging)
+        Worktree.checkin(stored, Nil, false, false)
+        Workspace.load(store.root)
+
+      test(m"The live tree is at the working value, and at the root of every other axis"):
+        val store = Workspace.load(fixture().root)
+        store.live.let { (directory, point) => (directory == t"${store.root}/doc", point) }
+
+      . assert: found =>
+          val store = fixture()
+          found == (true, at(store, t"next"))
+
+      test(m"A store with no working value has its live tree at the root point"):
+        val store = Workspace.init(scratch(), t".orthant/work/tree", t"doc")
+        val grown = store.axis(t"language", t"en", t"language")
+        grown.live.let(_(1)) == grown.space.root
+
+      . assert(_ == true)
+
+      test(m"A store which was not given a live tree has none, and nothing to store from one"):
+        val store = Workspace.init(scratch(), t"docs").axis(t"language", t"en", t"language")
+        (store.live.absent, Live.changes(store).size, code(Live.store(store, Nil, false, false)))
+
+      . assert(_ == (true, 0, t"↯/o.4.15"))
+
+      test(m"The working tree of a store with a live tree is not ignored, nor is the live tree"):
+        val store = fixture()
+        Disk.read(t"${store.root}/.gitignore").or(t"")
+
+      . assert(_ == t"")
+
+      test(m"A document written in the live tree is an edit, with no copy to tell it by"):
+        val store = fixture()
+        write(store, t"guide.md", t"Install it.\n")
+        Live.changes(Workspace.load(store.root)).map { change => (change.document, change.kind) }
+
+      . assert(_ == List((t"guide.md", Worktree.Kind.Added)))
+
+      test(m"Storing the live tree puts its documents at the working value, and no higher"):
+        val store = fixture()
+        write(store, t"guide.md", t"Install it.\n")
+        val stored = tagged(store)
+
+        ( stored.content(t"guide.md", at(stored, t"next")),
+          stored.content(t"guide.md", at(stored, t"v1")).absent,
+          Live.changes(stored).size )
+
+      . assert(_ == (List(t"Install it."), true, 0))
+
+      test(m"A dry run stores nothing, and says what would be"):
+        val store = fixture()
+        write(store, t"guide.md", t"Install it.\n")
+        val tally = Live.store(store, Nil, false, true)
+        (tally.stored.size, tally.saved.absent, Live.changes(Workspace.load(store.root)).size)
+
+      . assert(_ == (1, true, 1))
+
+      test(m"A change to the live tree leaves a translation of the changed lines stale"):
+        val store = translated()
+        write(store, t"guide.md", t"Install it.\n\nRun it now.\n")
+        val tally = Live.store(store, Nil, false, false)
+        val after = Workspace.load(store.root)
+        val french = at(after, t"fr", t"next")
+
+        ( after.content(t"guide.md", french),
+          Survey.work(after, t"guide.md", french).stale.size,
+          tally.effects.filter(_.point == french).map(_.stale) )
+
+      . assert(_ == (List(t"Installez-le.", t"", t"Lancez-le."), 1, List(1)))
+
+      test(m"What storing the live tree would do to the work is seen before it is stored"):
+        val store = translated()
+        write(store, t"guide.md", t"Install it.\n\nRun it now.\n")
+        val (seen, failed) = Live.prospect(store)
+        val french = at(seen, t"fr", t"next")
+
+        ( Survey.work(seen, t"guide.md", french).stale.size,
+          Survey.work(store, t"guide.md", french).stale.size, failed.size )
+
+      . assert(_ == (1, 0, 0))
+
+      test(m"A document missing from the live tree is deleted only when that is asked for"):
+        val store = translated()
+        java.nio.file.Files.delete(java.nio.file.Paths.get(t"${store.root}/doc/guide.md".s))
+        val kept = Live.store(store, Nil, false, false)
+        val still = Workspace.load(store.root).content(t"guide.md", at(store, t"next")).present
+        Live.store(Workspace.load(store.root), Nil, true, false)
+        val gone = Workspace.load(store.root).content(t"guide.md", at(store, t"next")).absent
+        (kept.skipped.size, kept.stored.size, still, gone)
+
+      . assert(_ == (1, 0, true, true))
+
+      test(m"A live tree which is not there is not taken to be empty"):
+        val store = translated()
+        java.nio.file.Files.delete(java.nio.file.Paths.get(t"${store.root}/doc/guide.md".s))
+        java.nio.file.Files.delete(java.nio.file.Paths.get(t"${store.root}/doc".s))
+        code(Live.store(store, Nil, true, false))
+
+      . assert(_ == t"↯/o.4.16")
+
+      test(m"The working tree is never at the live tree's point"):
+        val store = translated()
+        code(Worktree.checkout(store, at(store, t"next"), true))
+
+      . assert(_ == t"↯/o.4.17")
+
+      test(m"A release takes the working value's name from it, and changes no content"):
+        val store = translated()
+        val before = store.content(t"guide.md", at(store, t"next"))
+        Live.release(store, t"v2")
+        val after = Workspace.load(store.root)
+        val entry = after.entry(t"release").let(_.value).or(Nil)
+
+        ( entry.map { value => (value.name, value.parent.or(t""), value.working.or(false)) },
+          after.content(t"guide.md", at(after, t"fr", t"v2")),
+          after.content(t"guide.md", at(after, t"fr", t"next")),
+          after.live.let(_(1)) == at(after, t"next"),
+          after.content(t"guide.md", at(after, t"v2")) == before )
+
+      . assert: found =>
+          val values =
+            List((t"v1", t"", false), (t"v2", t"v1", false), (t"next", t"v2", true))
+
+          val french = List(t"Installez-le.", t"", t"Lancez-le.")
+          found == (values, french, french, true, true)
+
+      test(m"What is written after a release is stored beneath it, and not at it"):
+        val store = translated()
+        Live.release(store, t"v2")
+        val released = Workspace.load(store.root)
+        write(released, t"guide.md", t"Install it.\n\nRun it now.\n")
+        val after = tagged(released)
+
+        ( after.content(t"guide.md", at(after, t"v2")),
+          after.content(t"guide.md", at(after, t"next")),
+          Survey.work(after, t"guide.md", at(after, t"fr", t"v2")).stale.size,
+          Survey.work(after, t"guide.md", at(after, t"fr", t"next")).stale.size )
+
+      . assert: found =>
+          found ==
+            ( List(t"Install it.", t"", t"Run it."), List(t"Install it.", t"", t"Run it now."), 0,
+              1 )
+
+      test(m"A working value which is its axis's root is released as any other is"):
+        val store =
+          Workspace.init(scratch(), t".orthant/work/tree", t"doc")
+          . axis(t"language", t"en", t"language").value(t"language", t"fr", Unset)
+          . axis(t"release", t"next", t"custom")
+
+        Disk.directory(t"${store.root}/doc")
+        val marked = Live.working(store, t"release", t"next")
+        write(marked, t"guide.md", t"Install it.\n")
+        Live.release(tagged(marked), t"v1")
+        val after = Workspace.load(store.root)
+        write(after, t"guide.md", t"Install it now.\n")
+        val later = tagged(after)
+
+        ( later.space.axes.filter(_.name == t"release").head.let(_.root),
+          later.content(t"guide.md", at(later, t"v1")),
+          later.content(t"guide.md", at(later, t"next")),
+          later.live.let(_(1)) == at(later, t"next") )
+
+      . assert(_ == (t"v1", List(t"Install it."), List(t"Install it now."), true))
+
+      test(m"A release is refused a name which is taken, and a store with no working value"):
+        val store = translated()
+        val plain = Workspace.init(scratch(), t"docs").axis(t"release", t"v1", t"custom")
+        (code(Live.release(store, t"v1")), code(Live.release(plain, t"v2")))
+
+      . assert(_ == (t"↯/o.2.6", t"↯/o.2.10"))
+
+      test(m"Only one value is the working value"):
+        val store = fixture()
+        val moved = Live.working(store.value(t"release", t"later", t"next"), t"release", t"later")
+        val read = Workspace.load(store.root)
+
+        ( read.settings.working.let(_(1).name),
+          read.entry(t"release").let(_.value.count(_.working.or(false))) )
+
+      . assert(_ == (t"later", 1))
+
     // The store of the specification's example (spec/store.md §14), read as §12 says a reader
     // reads one: from memory, and from a disk.
     suite(m"Reading a store"):

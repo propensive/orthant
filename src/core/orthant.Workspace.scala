@@ -51,6 +51,11 @@ object Workspace:
     case Unrooted(revision: Text, axis: Text)
     case Shallow(revision: Text, axis: Text)
     case Sourced(axis: Text)
+    case Lifeless
+    case Vacant(directory: Text)
+    case Live(point: Text, directory: Text)
+    case Unworking
+    case Tagged(axis: Text)
 
   case class Error(reason: Reason)(using Diagnostics)
   extends fulminate.Error
@@ -132,6 +137,33 @@ object Workspace:
         case Reason.Sourced(axis) =>
           m"the axis $axis takes its values from the commits of its source, and has no branches"
 
+        case Reason.Lifeless =>
+          m"""
+            the store has no live tree; `orthant init --live <directory>` makes a store which
+            has one
+          """
+
+        case Reason.Vacant(directory) =>
+          m"the live tree $directory is not there, and nothing is stored from a tree which is not"
+
+        case Reason.Live(point, directory) =>
+          m"""
+            the documents at $point are those of the live tree; edit them in $directory, and
+            store them with `orthant tag`
+          """
+
+        case Reason.Unworking =>
+          m"""
+            no value of the store is the one being worked on, to be released; `orthant axis
+            working <axis> <value>` makes a value that one
+          """
+
+        case Reason.Tagged(axis) =>
+          m"""
+            the axis $axis takes its values from the tags of the repository; tag the commit with
+            git, and `orthant sync` makes the release
+          """
+
         case Reason.Preference(axis) =>
           m"the axis $axis has hunks stored on it, so what it prefers cannot change" ):
 
@@ -157,6 +189,11 @@ object Workspace:
       case Reason.Branch(_)              => Orthant.bolt(7, 3)
       case Reason.Kind(_)                => Orthant.bolt(7, 4)
       case Reason.Exists(_)              => Orthant.bolt(5, 2)
+      case Reason.Lifeless               => Orthant.bolt(4, 15)
+      case Reason.Vacant(_)              => Orthant.bolt(4, 16)
+      case Reason.Live(_, _)             => Orthant.bolt(4, 17)
+      case Reason.Unworking              => Orthant.bolt(2, 10)
+      case Reason.Tagged(_)              => Orthant.bolt(7, 11)
 
   // How many documents `survey` derives at once.
   private val abreast: Int = 4
@@ -167,16 +204,21 @@ object Workspace:
   // The directory, at or above the one given, which has a store in it.
   def find(directory: Text): Text raises Store.Error = Store.find(Disk.path(directory)).encode
 
-  // Creates an empty store, with no axes, whose working tree is the directory `tree`.
-  def init(root: Text, tree: Text): Workspace raises Store.Error raises Error =
+  // Creates an empty store, with no axes, whose working tree is the directory `tree`. If it
+  // is given a live tree, that is the directory `live`, which is not ignored: its documents are
+  // committed as they are written. A working tree within the store's own uncommitted directory
+  // needs no ignoring either.
+  def init(root: Text, tree: Text, live: Optional[Text] = Unset)
+  :   Workspace raises Store.Error raises Error =
+
     if Disk.exists(config(root)) then abort(Error(Reason.Exists(root)))
     val staging = t"${folder(root)}/work/staging"
-    val settings = Settings(Settings.format, tree, Nil)
+    val settings = Settings(Settings.format, tree, Nil, live)
     Disk.write(t"${folder(root)}/.gitattributes", t"* -text\n", staging)
     Disk.write(t"${folder(root)}/.gitignore", t"/work/\n", staging)
     val ignore = Disk.read(t"$root/.gitignore").or(t"")
 
-    if !Store.lines(ignore).has(t"/$tree/") then
+    if !tree.starts(t".orthant/work/") && !Store.lines(ignore).has(t"/$tree/") then
       val ignored = Store.text(Store.lines(ignore) + List(t"/$tree/"))
       Disk.write(t"$root/.gitignore", ignored, staging)
 
@@ -227,6 +269,15 @@ extends Store(held.settings, held.space, held.dossiers, held.omitted, held.upstr
   val staging: Text = t"$work/staging"
   val lock: Text = t"$work/lock"
   val tree: Text = t"$root/${settings.tree}"
+
+  // The live tree, if the store has one: its directory, and the point whose documents it
+  // holds, which is the working value on that value's axis, and the root of every other. In a
+  // store with no working value it is the root point.
+  def live: Optional[(Text, Point)] = settings.live.let: directory =>
+    val point = settings.working.lay(space.root): (entry, value) =>
+      space.axes.filter(_.name == entry.name).head.lay(space.root)(space.root.move(_, value.name))
+
+    (t"$root/$directory", point)
 
   private def file(point: Point, document: Text, folio: Optional[Folio]): Optional[Text] =
     folio.let:

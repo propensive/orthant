@@ -155,6 +155,13 @@ object Worktree:
       case Mode.Against(name, value) =>
         Indirect.alterationView(dossier, point, former(store, dossier, point, name, value))
 
+  // The live tree's documents are edited there, and nowhere else: its point is not one which
+  // the working tree may have.
+  private def apart(store: Workspace, point: Point): Unit raises Workspace.Error =
+    store.live.let: (directory, live) =>
+      if live == point
+      then abort(Workspace.Error(Workspace.Reason.Live(store.name(point), directory)))
+
   // A document as the working tree shows it at a point, or `Unset` if it is not there. It is
   // not shown if a hunk stored at the point has no one place.
   def render(store: Workspace, document: Text, point: Point, mode: Mode)
@@ -178,7 +185,9 @@ object Worktree:
       case Mode.Against(name, value) =>
         Indirect.alterationRead(dossier, point, former(store, dossier, point, name, value), lines)
 
-  private def lines(file: Text): Optional[List[Text]] raises Store.Error raises Workspace.Error =
+  private[orthant] def lines(file: Text)
+  :   Optional[List[Text]] raises Store.Error raises Workspace.Error =
+
     Disk.read(file).let(Store.lines(_))
 
   // How the working tree differs from what was checked out. Where an axis has a source, the
@@ -214,6 +223,7 @@ object Worktree:
   :   Int raises Store.Error raises Workspace.Error raises Axis.Error =
 
     admit(store, point, mode)
+    apart(store, point)
 
     val contents: List[(Text, Text)] = store.documents.bind: document =>
       render(store, document, point, mode).lay(Nil): lines => List((document, Store.text(lines)))
@@ -250,7 +260,7 @@ object Worktree:
     Workspace.Error(Workspace.Reason.Refused(document, store.name(place), detail, bolt))
 
   // The dossier of a document after its lines in the working tree are checked in.
-  private def revise
+  private[orthant] def revise
     ( store:    Workspace,
       document: Text,
       point:    Point,
@@ -299,6 +309,7 @@ object Worktree:
 
     val point = view(store)
     val sourced = store.space.sourced.present
+    apart(store, point)
 
     // A file of the source which is checked in for the first time is plain, whatever the mode.
     def shown(change: Change): Mode =
@@ -350,7 +361,7 @@ object Worktree:
 
   // What becomes of each point when `documents` change from what one store has to what
   // another has; the points to which nothing happens are left out.
-  private def effects(before: Workspace, after: Workspace, documents: List[Text])
+  private[orthant] def effects(before: Workspace, after: Workspace, documents: List[Text])
   :   List[Effect] raises Axis.Error =
 
     val space = before.space
@@ -472,7 +483,7 @@ object Worktree:
 
     liner(store)(document, placement)
 
-  private def chosen(document: Text, paths: List[Text]): Boolean =
+  private[orthant] def chosen(document: Text, paths: List[Text]): Boolean =
     paths.nil || paths.exists: path => document == path || document.starts(t"$path/")
 
   // Marks as checked every stale passage of the documents at the point which is checked out,
