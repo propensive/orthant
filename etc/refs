@@ -7,4 +7,4 @@
 # Orthant depends on Soundness alone. It is NOT a Pyrocosm application, and nothing here should
 # compile against Pyrocosm. The flare plugin and fume, which this repository merely runs, are
 # tools rather than dependencies: see etc/tools.
-propensive/soundness	0.78.0
+propensive/soundness	0.79.0
