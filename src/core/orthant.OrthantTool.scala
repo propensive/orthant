@@ -814,22 +814,23 @@ object OrthantTool:
         Out.println(t"At $place")
         Out.println(t"  nothing was changed in $name")
         Exit.Ok
-      else Disk.locked(store.lock):
-        val (fresh, point) = locate(open(), values)
+      else
+        Disk.locked(store.lock):
+          val (fresh, point) = locate(open(), values)
 
-        recover:
-          case error: Workspace.Error =>
-            Err.println(t"orthant: ${error.bolt.label} ${Orthant.prose(error)}")
-            Err.println(t"  what was written is kept; `orthant edit` opens it again")
-            Refused
+          recover:
+            case error: Workspace.Error =>
+              Err.println(t"orthant: ${error.bolt.label} ${Orthant.prose(error)}")
+              Err.println(t"  what was written is kept; `orthant edit` opens it again")
+              Refused
 
-        . protect:
-            val tally = Worktree.amend(fresh, name, point, mode, shown, edited)
-            tally.saved.let(Kept.hold(_))
-            discard()
-            Out.println(t"At $place")
-            tallied(fresh, tally, false)
-            Exit.Ok
+          . protect:
+              val tally = Worktree.amend(fresh, name, point, mode, shown, edited)
+              tally.saved.let(Kept.hold(_))
+              discard()
+              Out.println(t"At $place")
+              tallied(fresh, tally, false)
+              Exit.Ok
 
   private def live(directory: Optional[Text])(using Cli, Stdio): Raising[Exit] =
     val store = open()
@@ -1497,8 +1498,7 @@ object OrthantTool:
 
     val verb = if dry then t"would store" else t"stored"
 
-    tally.stored.each: change =>
-      Out.println(t"  $verb  ${label(change.kind)}  ${change.document}")
+    tally.stored.each: change => Out.println(t"  $verb  ${label(change.kind)}  ${change.document}")
 
     tally.skipped.each: change =>
       Out.println(t"  skipped  ${change.document} is missing; --remove deletes it at this point")

@@ -1643,7 +1643,7 @@ object Tests extends Suite(m"Orthant tests"):
 
       test(m"The live tree is at the working value, and at the root of every other axis"):
         val store = Workspace.load(fixture().root)
-        store.live.let { (directory, point) => (directory == t"${store.root}/doc", point) }
+        store.live.let: (directory, point) => (directory == t"${store.root}/doc", point)
 
       . assert: found =>
           val store = fixture()
@@ -1671,7 +1671,7 @@ object Tests extends Suite(m"Orthant tests"):
       test(m"A document written in the live tree is an edit, with no copy to tell it by"):
         val store = fixture()
         write(store, t"guide.md", t"Install it.\n")
-        Live.changes(Workspace.load(store.root)).map { change => (change.document, change.kind) }
+        Live.changes(Workspace.load(store.root)).map: change => (change.document, change.kind)
 
       . assert(_ == List((t"guide.md", Worktree.Kind.Added)))
 
