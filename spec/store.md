@@ -284,6 +284,7 @@ most one, and *any* any number:
 |---|---|---|---|
 | `format` | the document | once | the version of this format: `2` |
 | `tree` | the document | once | the directory of the working tree, relative to the store's home (§15) |
+| `live` | the document | optional | the directory of the live tree, relative to the store's home (§15) |
 | `axis` | the document | any | an axis; the order of occurrence is the order of the axes |
 | `name` | `axis` | once | an `axis-name` (§6.2) |
 | `kind` | `axis` | once | `language`, `custom` or `git` |
@@ -299,6 +300,7 @@ most one, and *any* any number:
 | `label` | `value` | optional | names by which the value is also known, separated by spaces (§7.3) |
 | `commit` | `value` | optional | a commit's hash (§7.3) |
 | `branch` | `value` | optional | `true` or `false` (§7.3) |
+| `working` | `value` | optional | `true` or `false`; if `true`, the value is the one which the live tree holds (§15) |
 
 This version defines no other member. A reader MUST refuse a store whose `format` is not `2`
 (**↯/o.5.1**). A reader SHOULD ignore a member which this table does not have: one may be
@@ -1264,6 +1266,8 @@ view.tel            the point which is checked out, and the mode of the view
 pristine/<path>     each document as it was checked out
 lock                held while the tool changes the store or the working tree
 staging             a file being written, before it is moved into place
+edit/<point>/<path> a view which an editor is at work on, or has left unstored
+tree/               the working tree, in a store which was made with a live tree
 ```
 
 `view.tel` is a TEL document with a `mode`, which is `direct`, `indirect` or `change`, and one
@@ -1275,6 +1279,16 @@ coordinate
   axis release
   value v2
 ```
+
+A store may also have a **live tree**, the directory which the configuration's `live` names,
+relative to the store's home. Unlike the working tree it is committed, and the tool never
+writes to it: it holds the documents at one point as they are being written. That point takes
+the **working value** on that value's axis, and the root of every other axis. The working
+value is the value which has `working true`; failing that, the one value of the store which
+has `branch true`, if there is exactly one; and failing that there is none, and the point is
+the root point. A value of a sourced axis is never the working value. Neither member has any
+bearing on content: the store holds for that point what the live tree had when the tool last
+stored it, and a reader reads only that.
 
 Without the file, the root point is checked out. In the mode `change` it also has `from`, as
 `axis=value`: the earlier value from which a change to the reference is shown.

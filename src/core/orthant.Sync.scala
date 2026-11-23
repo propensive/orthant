@@ -208,7 +208,7 @@ object Sync:
   // The store in which a value of an axis has another name: its records are moved, and the
   // values beneath it follow. The configuration is written if any record is moved, so that it
   // and the records agree; otherwise it is left for the caller to write.
-  private def rename
+  private[orthant] def rename
     ( store: Workspace, axis: Text, old: Text, name: Text, change: ValueEntry => ValueEntry )
   :   Workspace raises Store.Error raises Workspace.Error raises Axis.Error =
 
@@ -250,7 +250,7 @@ object Sync:
     val renamed = store.adopt(store.settings.copy(axis = entries), place)
     if old != name then renamed.inscribe() else renamed
 
-  private def add(store: Workspace, axis: Text, value: ValueEntry)
+  private[orthant] def add(store: Workspace, axis: Text, value: ValueEntry)
   :   Workspace raises Store.Error raises Workspace.Error raises Axis.Error =
 
     val entries = store.settings.axis.map: entry =>

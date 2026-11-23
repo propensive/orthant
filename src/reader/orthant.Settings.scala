@@ -28,13 +28,17 @@ import soundness.*
 // On an axis which follows a git repository, a value is a commit: its name is the start of the
 // commit's hash, `commit` is the whole of it, and `label` is the tags which name it, separated
 // by spaces. A value with `branch` set is what is not yet released on the branch of its name.
+//
+// A value with `working` set is the one whose documents the live tree holds: what is being
+// written, and is not yet released. At most one value of a store is.
 case class ValueEntry
   ( name:        Text,
     parent:      Optional[Text]    = Unset,
     translation: Optional[Boolean] = Unset,
     label:       Optional[Text]    = Unset,
     commit:      Optional[Text]    = Unset,
-    branch:      Optional[Boolean] = Unset ):
+    branch:      Optional[Boolean] = Unset,
+    working:     Optional[Boolean] = Unset ):
 
   def labels: List[Text] = label.lay(Nil)(_.cut(t" ").filter(_ != t""))
 
@@ -72,7 +76,23 @@ object Settings:
   // with different languages is a translation.
   def language(value: Text): Text = value.cut(t"/").head
 
-case class Settings(format: Int, tree: Text, axis: List[AxisEntry]):
+// `live` is the directory of the live tree, relative to the store's parent: the documents as
+// they are being written, which are edited there freely and stored by `orthant tag`. Neither
+// it nor a value's `working` has any bearing on content.
+case class Settings(format: Int, tree: Text, axis: List[AxisEntry], live: Optional[Text] = Unset):
+  // The axis and the value which the live tree holds: the value marked as working or, where
+  // none is, the one unreleased value of an axis which follows a repository, if there is one.
+  def working: Optional[(AxisEntry, ValueEntry)] =
+    def among(chosen: ValueEntry => Boolean): List[(AxisEntry, ValueEntry)] =
+      axis.filter(_.source.absent).bind: entry => entry.value.filter(chosen).map((entry, _))
+
+    among(_.working.or(false)) match
+      case Nil => among(_.branch.or(false)) match
+        case found :: Nil => found
+        case _            => Unset
+
+      case found :: _ => found
+
   def space: Space raises Axis.Error = Space:
     axis.map: entry =>
       val values = entry.value.map: value =>
