@@ -1,0 +1,149 @@
+tel 1.0 propensive.dev/bolt
+
+# Bolt codes of Orthant: `subdivision 4` / `error 1` is ↯/o.4.1. A subdivision is a part of what
+# Orthant does, in the order `design/engine.md` sets them out; an error takes the next free number
+# of its subdivision.
+#
+# This is the record of the letter `o` which the index of bolt codes, `projects.tel` in
+# propensive/bolt, names; its schema is `bolt.tel` there. A code, once assigned, is permanent: a
+# number is never reused, and one which is withdrawn stays, marked `retired`.
+
+project o orthant
+
+  subdivision 1
+    summary  the store format
+    error 1
+      summary  a delta file's header is missing or malformed
+    error 2
+      summary  a line of a delta file has no sigil, or its anchor line is not written as one
+    error 3
+      summary  the lines of a hunk are out of order, or it has not exactly one anchor line
+    error 4
+      summary  a delta file is of another format version
+    error 5
+      summary  the store holds both a base and a delta for a document at a point
+    error 6
+      summary  a delta's header names an axis which is not its point's storage axis
+    error 7
+      summary  a directory of the store's data does not name a point
+    error 8
+      summary  a stored hunk does not have its lines exactly once in its storage parent
+    error 9
+      summary  the store holds a record at a point whose content is the source's
+
+  subdivision 2
+    summary  axes and points
+    error 1
+      summary  a value is not on the axis
+    error 2
+      summary  an axis has no root, or more than one
+    error 3
+      summary  a value's parents form a cycle
+    error 4
+      summary  a name is not valid for an axis or a value
+    error 5
+      summary  the axis already exists
+    error 6
+      summary  an axis of the store already has the value
+    error 7
+      summary  a value given alone is on more than one axis
+    error 8
+      summary  no axis has the value, or there is no such axis
+    error 9
+      summary  hunks are stored on the axis, so what it prefers cannot change
+
+  subdivision 3
+    summary  check-in
+    error 1
+      summary  the checked-out content would not equal the working tree
+    error 2
+      summary  a point outside the scope would change
+    error 3
+      summary  a stored hunk would not locate exactly once
+    error 4
+      summary  a change could not be carried to the point it was sent to
+    error 5
+      summary  the changes, stored where they were sent, would not give the checked-in content
+    error 6
+      summary  the check-in is at a point whose content is the source's
+
+  subdivision 4
+    summary  the working tree and its views
+    error 1
+      summary  there is no store in the directory or above it
+    error 2
+      summary  the working tree has edits which are not checked in
+    error 3
+      summary  the store's content changed since the document was checked out
+    error 4
+      summary  a new document's name ends in `.delta`
+    error 5
+      summary  a file could not be read or written
+    error 6
+      summary  the document does not exist at the point
+    error 7
+      summary  a line of a view has no sigil
+    error 8
+      summary  the reference's lines in a view are not those which were checked out
+    error 9
+      summary  the `!` lines of a view were changed
+    error 10
+      summary  the point has no storage parent for an indirect view
+    error 11
+      summary  a strict export found stale, conflicting or untranslated lines
+    error 12
+      summary  an update could not carry an edit onto the store's content
+    error 13
+      summary  there is no view against that change at the point checked out
+    error 14
+      summary  a view against a change was asked for from the value checked out
+
+  subdivision 5
+    summary  the configuration
+    error 1
+      summary  the configuration, or the record of the view, could not be read, the store is of another format, or a name is there twice
+    error 2
+      summary  there is already a store in the directory
+
+  subdivision 6
+    summary  the command line
+    error 1
+      summary  unrecognised command
+    error 2
+      summary  a command was given the wrong operands
+
+  subdivision 7
+    summary  git: following a repository, and the source of an axis
+    error 1
+      summary  the git repository could not be read
+    error 2
+      summary  a tag has more than one nearest ancestor among the axis's values
+    error 3
+      summary  the repository has no such branch
+    error 4
+      summary  the axis does not follow a git repository
+    error 5
+      summary  the source of an axis could not be read, or none was given
+    error 6
+      summary  on a sourced axis, a value's commit does not descend from its parent's
+    error 7
+      summary  the source's repository has no commit which the revision names
+    error 8
+      summary  the commit does not descend from the root of the sourced axis
+    error 9
+      summary  the source's history is shallow, and does not reach from the commit to a value
+    error 10
+      summary  a branch was to be tracked on a sourced axis
+
+  subdivision 8
+    summary  upgrading the tool
+    error 1
+      summary  the launcher did not apply an upgrade which was staged
+    error 2
+      summary  the executable has no key, so it cannot be upgraded in place
+    error 3
+      summary  the newest release has no executable for the platform
+    error 4
+      summary  the release's executable could not be downloaded, or its digest was wrong
+    error 5
+      summary  the downloaded executable could not be staged
