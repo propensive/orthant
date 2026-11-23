@@ -327,6 +327,42 @@ each later commit as any hunk is onto a storage parent which has changed.
   source no longer has are baseless, and a base record for a document which the source has
   come to have is an overlay. Neither is an error, and `status` reports both.
 
+## A live tree
+
+A store may keep the documents which are being written outside itself, in a directory which is
+committed and edited freely (`spec/store.md` §15), and hold only what they were when they were
+last stored.
+
+- **The releases run forward.** The first release is the root of its axis, and each later one
+  is hunks against the one before, so making a release writes nothing at an earlier one. A
+  translation checked in at one release is inherited at every later one, re-based from the
+  English it was written against onto the English there, which is what says where it is
+  stale. The newest value is the **working value**, for what is not yet released.
+- **Storing the tree is a check-in.** A hunk holds an imprint of the lines it replaces, and
+  not the lines, so it can be carried onto a changed content only while the content it was
+  written against is still to hand. The live tree alone would not keep that. So `orthant tag`
+  checks the tree in at the working value, as often as is wanted: that is the moment at which
+  both contents are known, and the hunks of every point below follow as they do for any
+  check-in (`Live.store`, through `Worktree.revise`).
+- **No copy is kept.** An edit to the live tree is whatever differs from the store's content
+  at its point. The working tree needs a pristine copy, because the store may change beneath
+  what was checked out; the live tree is never written from the store, so there is nothing
+  for it to be behind.
+- **A release is a renaming** (`Live.release`): the working value takes the release's name,
+  with its records, and a new working value of the old name is added beneath it, with none.
+  No content changes. It is what `sync` does when it finds a tag on a tracked branch, and uses
+  the same two steps; on an axis of kind `git` the tag is the release, and `orthant tag
+  <name>` is refused (`↯/o.7.11`).
+- **The working tree is never at the live tree's point** (`↯/o.4.17`): those documents have
+  one place in which they are edited.
+- **An edit without a tree.** `orthant edit` writes a view of one document to a file within
+  `.orthant/work/edit/`, has the launcher run an editor on it on the client's own terminal
+  (the daemon has none), and stores what is left through `Worktree.amend`, which is a check-in
+  of that view. The store's lock is not held while the editor runs; the view is compared
+  with the store's again before anything is stored (`↯/o.4.3`).
+- **Neither member bears on content.** `live` and `working` say where the tool looks, and a
+  reader may ignore both.
+
 ## Invariants
 
 1. After a check-in, the checked-out point's content is the new content.
@@ -393,6 +429,7 @@ names; a new error is added to both.
 | `↯/o.2.7` | a value given alone is on more than one axis |
 | `↯/o.2.8` | no axis has the value, or there is no such axis |
 | `↯/o.2.9` | hunks are stored on the axis, so what it prefers cannot change |
+| `↯/o.2.10` | no value of the store is the working value |
 | `↯/o.3.1` | the checked-out content would not equal the working tree |
 | `↯/o.3.2` | a point outside the scope would change |
 | `↯/o.3.3` | a stored hunk would not locate exactly once |
@@ -413,6 +450,9 @@ names; a new error is added to both.
 | `↯/o.4.12` | an update could not carry an edit onto the store's content |
 | `↯/o.4.13` | there is no view against that change at the point checked out |
 | `↯/o.4.14` | a view against a change was asked for from the value checked out |
+| `↯/o.4.15` | the store has no live tree |
+| `↯/o.4.16` | the live tree's directory is not there |
+| `↯/o.4.17` | the point is the live tree's, and is not checked out or checked in |
 | `↯/o.5.1` | the configuration, or the record of the view, could not be read, the store is of another format, or a name is there twice |
 | `↯/o.5.2` | there is already a store in the directory |
 | `↯/o.6.1` | unrecognised command |
@@ -427,6 +467,7 @@ names; a new error is added to both.
 | `↯/o.7.8` | the commit does not descend from the root of the sourced axis |
 | `↯/o.7.9` | the source's history is shallow, and does not reach from the commit to a value |
 | `↯/o.7.10` | a branch was to be tracked on a sourced axis |
+| `↯/o.7.11` | a release was to be made by name on an axis which follows a repository |
 | `↯/o.8.1` | the launcher did not apply an upgrade which was staged |
 | `↯/o.8.2` | the executable has no key, so it cannot be upgraded in place |
 | `↯/o.8.3` | the newest release has no executable for the platform |

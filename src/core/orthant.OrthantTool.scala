@@ -61,6 +61,9 @@ object OrthantTool:
   private val AddCommand = Subcommand(t"add", t"add an axis: <axis> <root value> [<tag pattern>]")
   private val ValueCommand = Subcommand(t"value", t"add a value: <axis> <value> [<parent>]")
 
+  private val WorkingCommand =
+    Subcommand(t"working", t"make a value the one the live tree holds: <axis> <value>")
+
   private val PreferCommand =
     Subcommand(t"prefer", t"choose what a stale hunk shows: <axis> own|parent")
 
@@ -126,6 +129,21 @@ object OrthantTool:
   private val CheckinCommand =
     Subcommand(t"checkin", t"store the edited documents: [<path>…]", group = TreeGroup)
 
+  private val EditCommand =
+    Subcommand
+      ( t"edit", t"edit a document at a point, and store the result: <path> [<value>…]",
+        group = TreeGroup )
+
+  private val LiveCommand =
+    Subcommand
+      ( t"live", t"say where the live tree is, or make a directory the live tree: [<directory>]",
+        group = TreeGroup )
+
+  private val TagCommand =
+    Subcommand
+      ( t"tag", t"store the live tree at the working value, and release it: [<name>]",
+        group = TreeGroup )
+
   private val HelpFlag =
     Flag[Unit](t"help", false, List('h'), t"describe the available subcommands and options")
 
@@ -174,7 +192,12 @@ object OrthantTool:
       ( t"along", false, Nil,
         t"export at every value of the axis, each into a directory of its name" )
 
-  private val valueFlags: List[Flag] = List(OnlyFlag, SinceFlag, OriginFlag, AlongFlag)
+  private val LiveFlag =
+    Flag[Text]
+      ( t"live", false, Nil,
+        t"the directory in which the documents are written, and from which they are stored" )
+
+  private val valueFlags: List[Flag] = List(OnlyFlag, SinceFlag, OriginFlag, AlongFlag, LiveFlag)
 
   private val StrictFlag =
     Flag[Unit]
@@ -268,7 +291,15 @@ object OrthantTool:
           Exit.Ok
 
       case InitCommand() :: rest =>
-        execute(attempt(init(operands(rest).map(_()))))
+        val live = valued(LiveFlag, t"directory")
+        val extra = surplus
+
+        // The operands are those which are not the value of the flag.
+        def named: List[Text] =
+          (operands(rest).filter { argument => live.lay(true)(_ != argument()) } + extra).map(_())
+          . distinct
+
+        execute(attempt(init(named, live)))
 
       case AxisCommand() :: AddCommand() :: rest =>
         val language = LanguageFlag().present
@@ -306,6 +337,12 @@ object OrthantTool:
             case axis :: value :: Nil           => attempt(addValue(axis, value, Unset))
             case axis :: value :: parent :: Nil => attempt(addValue(axis, value, parent))
             case _                              => usage(valueSynopsis)
+
+      case AxisCommand() :: WorkingCommand() :: rest =>
+        execute:
+          operands(rest).map(_()) match
+            case axis :: value :: Nil => attempt(working(axis, value))
+            case _                    => usage(t"orthant axis working <axis> <value>")
 
       case AxisCommand() :: PreferCommand() :: rest =>
         execute:
@@ -426,6 +463,32 @@ object OrthantTool:
 
           reach.lay(usage(checkinSynopsis))(run(_))
 
+      case EditCommand() :: rest =>
+        val offered = values
+        operands(rest).each(_.select(offered))
+
+        execute:
+          operands(rest).map(_()) match
+            case path :: values => attempt(edit(path, values))
+            case _              => usage(t"orthant edit <path> [<value>…]")
+
+      case LiveCommand() :: rest =>
+        execute:
+          operands(rest).map(_()) match
+            case Nil              => attempt(live(Unset))
+            case directory :: Nil => attempt(live(directory))
+            case _                => usage(t"orthant live [<directory>]")
+
+      case TagCommand() :: rest =>
+        val remove = RemoveFlag().present
+        val dry = DryRunFlag().present
+
+        execute:
+          operands(rest).map(_()) match
+            case Nil         => attempt(tag(Unset, remove, dry))
+            case name :: Nil => attempt(tag(name, remove, dry))
+            case _           => usage(t"orthant tag [<name>] [--remove] [--dry-run]")
+
       case Nil =>
         execute:
           Out.println(resident.help())
@@ -450,10 +513,49 @@ object OrthantTool:
   private def manual(command: Text): List[Text] = command match
     case t"init" =>
       List
-        ( t"orthant init [<directory>]",
+        ( t"orthant init [<directory>] [--live <directory>]",
           t"",
           t"Creates a store in .orthant/ here, whose working tree is <directory>, or docs/. The",
-          t"working tree is added to .gitignore; .orthant/ is to be committed." )
+          t"working tree is added to .gitignore; .orthant/ is to be committed.",
+          t"",
+          t"With --live, the documents being written are in a directory of their own, which is",
+          t"committed and edited freely, and `orthant tag` stores them. The working tree, in",
+          t"which any other point is checked out, is then .orthant/work/tree unless one is named." )
+
+    case t"edit" =>
+      List
+        ( t"orthant edit <path> [<value>…]",
+          t"",
+          t"Opens a document in an editor, as it is at the point checked out moved to the values",
+          t"given, and stores what the editor leaves, as `orthant checkin` would. A document",
+          t"which derives from another is shown as an indirect view, in which a `? ` line is",
+          t"translated by adding `+ ` lines beneath it. The working tree has no part in it. The",
+          t"editor is $$VISUAL, or $$EDITOR, or vi. If what is left cannot be stored, it is kept,",
+          t"and `orthant edit` opens it again." )
+
+    case t"live" =>
+      List
+        ( t"orthant live [<directory>]",
+          t"",
+          t"Says where the live tree is, and which point's documents it holds; or makes a",
+          t"directory, relative to the store's, the live tree. Whatever there differs from what",
+          t"the store has at that point is an edit, which `orthant status` shows and `orthant",
+          t"tag` stores. The point is the working value, on its axis: the one which `orthant axis",
+          t"working` names or, failing that, the one unreleased value of an axis which follows",
+          t"the git repository." )
+
+    case t"tag" =>
+      List
+        ( t"orthant tag [<name>] [--remove] [--dry-run]",
+          t"",
+          t"Stores the documents of the live tree at the working value, so that every point",
+          t"below it follows, and says how the work at each has changed. A document which is",
+          t"missing from the tree is deleted only with --remove. --dry-run stores nothing.",
+          t"",
+          t"With a name, the working value is then released: it takes the name, with everything",
+          t"stored at it, and a new working value of its former name begins beneath it. On an",
+          t"axis which follows the git repository, a release is a tag there, and `orthant sync`",
+          t"takes it up." )
 
     case t"axis" =>
       List
@@ -462,10 +564,12 @@ object OrthantTool:
           t"orthant axis add <axis> <commit> --source [<repository> [<prefix>]]",
           t"orthant axis value <axis> <value> [<parent>]",
           t"orthant axis prefer <axis> own|parent",
+          t"orthant axis working <axis> <value>",
           t"",
           t"Lists the axes and their values; adds an axis, or a value beneath another; or chooses",
           t"whether a stale passage on an axis shows its own lines or those it would replace.",
           t"On a language axis, a value with another language code translates its parent.",
+          t"`working` makes a value the one whose documents the live tree holds.",
           t"",
           t"With --source, the axis's values are commits of a git repository: the one the store",
           t"is in, or the one at <repository>. What a commit has beneath <prefix>, or in its",
@@ -650,12 +754,111 @@ object OrthantTool:
   private def documents(count: Int): Text =
     if count == 1 then t"1 document" else t"$count documents"
 
-  private def init(operands: List[Text])(using Cli, Stdio): Raising[Exit] =
-    val tree = operands.head.or(t"docs")
-    val store = Workspace.init(here, tree)
+  private def init(operands: List[Text], live: Optional[Text])(using Cli, Stdio): Raising[Exit] =
+    val tree = operands.head.or(if live.present then t".orthant/work/tree" else t"docs")
+    val store = Workspace.init(here, tree, live)
     Disk.directory(store.tree)
     Out.println(t"Created an Orthant store in ${store.folder}; its working tree is $tree/")
+
+    live.let: directory =>
+      Out.println(t"Its live tree is $directory/; `orthant tag` stores what is written there.")
+
     Exit.Ok
+
+  // The view of a document at a point is written to a file of the store's own, which an
+  // editor is run on, on the terminal the command was given at; what it leaves is stored as a
+  // check-in of that view. A file left by an edit which could not be stored is opened again,
+  // as long as the store's document has not changed since.
+  private def edit(path: Text, values: List[Text])
+    ( using cli: Cli, stdio: Stdio, resident: Resident )
+  :   Raising[Refused.type | Exit] =
+
+    val (store, point) = locate(open(), values)
+    val name = document(store, path)
+    val rooted = store.space.storageAxis(point).absent
+    val mode = if rooted then Worktree.Mode.Plain else Worktree.Mode.Beside
+    val place = describe(store, point)
+
+    Worktree.render(store, name, point, mode).lay(absent(path, place)): shown =>
+      val folder = t"${store.work}/edit/${store.name(point)}"
+      val file = t"$folder/$name"
+      val copy = t"$folder/$name.shown"
+      val kept = Disk.read(copy) == Store.text(shown) && Disk.exists(file)
+
+      if !kept then
+        Disk.write(file, Store.text(shown), store.staging)
+        Disk.write(copy, Store.text(shown), store.staging)
+
+      val editor =
+        cli.environment.variable(t"VISUAL").or(cli.environment.variable(t"EDITOR")).or(t"vi")
+
+      // The editor may be a command with arguments of its own, so a shell runs it.
+      val status = resident.terminal(t"sh", List(t"-c", t"$editor \"$$1\"", t"sh", file), here)
+      val edited = Disk.read(file).let(Store.lines(_)).or(shown)
+
+      def discard(): Unit =
+        Disk.remove(file, store.work)
+        Disk.remove(copy, store.work)
+
+      // The launcher answers 127 where it has no terminal to give the editor, as in a pipe.
+      val ending =
+        if status == 127 then t"could not be run, or there is no terminal to run it on"
+        else t"ended with the status $status"
+
+      if status != 0 then
+        Err.println(t"orthant: the editor, $editor, $ending")
+        Err.println(t"  nothing is stored; what it left is kept in $file")
+        Refused
+      else if edited == shown then
+        discard()
+        Out.println(t"At $place")
+        Out.println(t"  nothing was changed in $name")
+        Exit.Ok
+      else
+        Disk.locked(store.lock):
+          val (fresh, point) = locate(open(), values)
+
+          recover:
+            case error: Workspace.Error =>
+              Err.println(t"orthant: ${error.bolt.label} ${Orthant.prose(error)}")
+              Err.println(t"  what was written is kept; `orthant edit` opens it again")
+              Refused
+
+          . protect:
+              val tally = Worktree.amend(fresh, name, point, mode, shown, edited)
+              tally.saved.let(Kept.hold(_))
+              discard()
+              Out.println(t"At $place")
+              tallied(fresh, tally, false)
+              Exit.Ok
+
+  private def live(directory: Optional[Text])(using Cli, Stdio): Raising[Exit] =
+    val store = open()
+
+    def say(store: Workspace): Unit =
+      val none = t"The store has no live tree; `orthant live <directory>` names one."
+
+      Out.println:
+        store.live.lay(none): (directory, point) =>
+          t"The live tree is $directory, at ${describe(store, point)}"
+
+    directory.lay(say(store)): directory =>
+      Disk.locked(store.lock)(say(Live.settle(store, directory)))
+
+    Exit.Ok
+
+  private def working(axis: Text, value: Text)(using Cli, Stdio): Raising[Exit] =
+    val store = open()
+
+    Disk.locked(store.lock):
+      val marked = Live.working(store, axis, value)
+      val title = marked.title(axis, marked.named(axis, value).or(value))
+      Out.println(t"The working value is $title, on the axis $axis")
+
+      if marked.live.absent
+      then Out.println(t"The store has no live tree; `orthant live <directory>` names one.")
+
+      Exit.Ok
 
   private def addAxis
     ( axis:    Text,
@@ -1014,13 +1217,25 @@ object OrthantTool:
     changes.each: change => Out.println(t"  ${label(change.kind)}  ${change.document}")
 
     if changes.nil then Out.println(t"  nothing to check in")
-    val (seen, failed) = Worktree.prospect(store)
+    val written = Live.changes(store)
+
+    // The live tree's edits are those of another point, and are counted with the rest.
+    store.live.let: (directory, point) =>
+      if !written.nil then
+        val place = describe(store, point)
+        Out.println(t"In the live tree, at $place, which `orthant tag` stores:")
+        written.each: change => Out.println(t"  ${label(change.kind)}  ${change.document}")
+
+    val (edited, unready) = Worktree.prospect(store)
+    val (seen, unstored) = Live.prospect(edited)
+    val failed = unready + unstored
 
     failed.each: document =>
       val reason = t"`orthant checkin --dry-run` says why it cannot be checked in"
       Out.println(t"  unready   $document ($reason)")
 
-    val counted = if changes.nil then t"" else t", counting the edits not checked in"
+    val pending = !changes.nil || !written.nil
+    val counted = if !pending then t"" else t", counting the edits not checked in"
     seen.prepare(if !all && values.nil then List(target) else seen.within(values))
 
     if !all && values.nil then
@@ -1028,7 +1243,7 @@ object OrthantTool:
       val sum = Survey.sum(seen, target)
       if sum.total > 0 then Out.println(t"  ${progress(sum)}$counted")
     else
-      if !changes.nil then Out.println(t"  (what follows counts the edits not checked in)")
+      if pending then Out.println(t"  (what follows counts the edits not checked in)")
 
       seen.within(values).each: point =>
         val sum = Survey.sum(seen, point)
@@ -1237,38 +1452,78 @@ object OrthantTool:
     Disk.locked(store.lock):
       val tally = Worktree.checkin(store, paths.map(document(store, _)), remove, dry, since)
       tally.saved.let(Kept.hold(_))
-      val verb = if dry then t"would store" else t"stored"
-
-      tally.stored.each: change =>
-        Out.println(t"  $verb  ${label(change.kind)}  ${change.document}")
-
-      tally.skipped.each: change =>
-        Out.println(t"  skipped  ${change.document} is missing; --remove deletes it at this point")
-
-      if dry then
-        val changed = tally.effects.filter(_.changed).map: effect => describe(store, effect.point)
-
-        val named = if changed.size <= 4 then changed.join(t", ") else
-          t"${changed.keep(3).join(t", ")} and ${changed.size - 3} others"
-
-        val points = if changed.size == 1 then t"1 point" else t"${changed.size} points"
-        if !changed.nil then Out.println(t"  would change the content at $points: $named")
-
-      // What the check-in does to the work at each point.
-      tally.effects.each: effect =>
-        def more(count: Int, one: Text, many: Text): List[Text] =
-          val size = if count < 0 then 0 - count else count
-          val noun = if size == 1 then one else many
-          val change = if count > 0 then t"more" else t"fewer"
-          if count == 0 then Nil else List(t"$size $change $noun")
-
-        val parts =
-          more(effect.pending, t"line to translate", t"lines to translate") +
-            more(effect.stale, t"stale passage", t"stale passages")
-
-        val verb = if dry then t"would leave" else t"leaves"
-        val place = describe(store, effect.point)
-        if !parts.nil then Out.println(t"  $verb  $place with ${parts.join(t", ")}")
-
+      tallied(store, tally, dry)
       if tally.stored.nil && tally.skipped.nil then Out.println(t"  nothing to check in")
       Exit.Ok
+
+  // Stores the live tree and, if a name is given, releases the working value as it.
+  private def tag(name: Optional[Text], remove: Boolean, dry: Boolean)(using Cli, Stdio)
+  :   Raising[Refused.type | Exit] =
+
+    val store = open()
+
+    Disk.locked(store.lock):
+      val (directory, point) =
+        store.live.or(abort(Workspace.Error(Workspace.Reason.Lifeless)))
+
+      // A release which would be refused is refused before anything is stored.
+      name.let(Live.releasing(store, _))
+      val tally = Live.store(store, Nil, remove, dry)
+      tally.saved.let(Kept.hold(_))
+      Out.println(t"At ${describe(store, point)}")
+      tallied(store, tally, dry)
+
+      if tally.stored.nil && tally.skipped.nil
+      then Out.println(t"  nothing to store: the live tree is as the store has it")
+
+      name.let: name =>
+        val (entry, value) = Live.releasing(store, name)
+
+        // A release is of the whole tree: it is not made while a document is passed over.
+        if !tally.skipped.nil then
+          Out.println(t"  not released: --remove deletes the documents which are missing")
+        else if dry then
+          Out.println(t"  would release ${value.name} as $name")
+        else
+          val released = Live.release(tally.saved.or(store), name)
+          Kept.hold(released)
+          val begun = t"${value.name} begins again beneath it"
+          Out.println(t"  released ${value.name} as $name on the axis ${entry.name}; $begun")
+
+      if name.present && !tally.skipped.nil then Refused else Exit.Ok
+
+  // What a check-in stored, and what it did to the work at each point.
+  private def tallied(store: Workspace, tally: Worktree.Tally, dry: Boolean)(using Stdio)
+  :   Raising[Unit] =
+
+    val verb = if dry then t"would store" else t"stored"
+
+    tally.stored.each: change => Out.println(t"  $verb  ${label(change.kind)}  ${change.document}")
+
+    tally.skipped.each: change =>
+      Out.println(t"  skipped  ${change.document} is missing; --remove deletes it at this point")
+
+    if dry then
+      val changed = tally.effects.filter(_.changed).map: effect => describe(store, effect.point)
+
+      val named = if changed.size <= 4 then changed.join(t", ") else
+        t"${changed.keep(3).join(t", ")} and ${changed.size - 3} others"
+
+      val points = if changed.size == 1 then t"1 point" else t"${changed.size} points"
+      if !changed.nil then Out.println(t"  would change the content at $points: $named")
+
+    // What the check-in does to the work at each point.
+    tally.effects.each: effect =>
+      def more(count: Int, one: Text, many: Text): List[Text] =
+        val size = if count < 0 then 0 - count else count
+        val noun = if size == 1 then one else many
+        val change = if count > 0 then t"more" else t"fewer"
+        if count == 0 then Nil else List(t"$size $change $noun")
+
+      val parts =
+        more(effect.pending, t"line to translate", t"lines to translate") +
+          more(effect.stale, t"stale passage", t"stale passages")
+
+      val verb = if dry then t"would leave" else t"leaves"
+      val place = describe(store, effect.point)
+      if !parts.nil then Out.println(t"  $verb  $place with ${parts.join(t", ")}")

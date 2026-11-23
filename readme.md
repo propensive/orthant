@@ -93,6 +93,49 @@ says where a patch is stale, where the source no longer has the file it changes 
 and where the source has come to have a file which a patch adds (`overlaid`). Such an axis is
 the last.
 
+The documents which are being written can instead be in a **live tree**: a directory of their
+own, which is committed with everything else, and edited at any time.
+
+```
+orthant init --live doc                  # the documents are written in doc/
+orthant axis add language en --language
+orthant axis value language fr
+orthant axis add release next
+orthant axis working release next        # the live tree holds what is at `next`
+orthant status                           # what in doc/ is not yet stored, and what it will leave to do
+orthant tag                              # store doc/ at `next`; the translations beneath it follow
+orthant checkout fr next --indirect      # a translation, in the working tree: .orthant/work/tree/
+orthant tag v1                           # store doc/, and release it: `next` begins again beneath v1
+orthant live [<directory>]               # where the live tree is; or give a store one
+orthant edit guide/intro.md fr           # translate one document in $EDITOR, and store the result
+```
+
+The store's first release is the root of its axis, and each later one holds what changed since
+the one before, so a release is never written again once it is made. What is not yet released
+is at the **working value**, which the live tree holds. `orthant tag` stores the tree there as
+a check-in does, so a translation of lines which have changed becomes stale, and `orthant
+status` says so beforehand, counting the edits which are not yet stored. Orthant never writes
+to the live tree, and keeps no copy of it: an edit is whatever differs from what the store has,
+so a fresh clone is ready as it is. A document which is deleted from the tree is deleted from
+the store only by `orthant tag --remove`.
+
+`orthant tag v1` then makes the release: the working value takes the name `v1`, with all that
+is stored at it, and a new working value of its old name begins beneath it, with nothing stored
+at it. On an axis which follows the git repository, the tracked branch's value is the working
+value without being told, and the release is made by tagging the commit and `orthant sync`.
+
+`orthant edit <path> [<value>…]` needs no working tree at all, in any store. It opens the
+document at the point named, as an indirect view where it derives from another, in `$VISUAL`
+or `$EDITOR`, on the terminal the command was given at, and stores what the editor leaves as a
+check-in of that view would. What cannot be stored is kept, and is opened again by the same
+command.
+
+Every other point is checked out in the working tree, as ever; the live tree's own point is
+not, since its documents are edited where they are. Two branches of a repository which each
+store the live tree will conflict in the records at the working value as well as in the
+documents: take either side's records, and `orthant tag` makes them agree with the documents
+as merged.
+
 No two values of a store have one name, even on different axes, so a value alone says which
 axis it is of. What is checked in at a point is kept in a directory for each of its values
 which is not a root, one within another in the order of the axes, and `_` within the last:
