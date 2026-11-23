@@ -97,11 +97,11 @@ object Live:
         . lay((next, failed + List(change.document))): dossier =>
             (next.supposing(change.document, dossier), failed)
 
-  // The store in which the working value has been released as `name`: it takes that name,
-  // with everything stored at it, and a new value of its former name, at which nothing is
-  // stored, is the working value beneath it. No content changes. The configuration is written.
-  def release(store: Workspace, name: Text)
-  :   Workspace raises Store.Error raises Workspace.Error raises Axis.Error =
+  // The axis and the working value which a release as `name` would be of. It is refused on an
+  // axis which follows a repository, where a release is a tag of that; and a name which is not
+  // valid, or which a value has already.
+  def releasing(store: Workspace, name: Text)
+  :   (AxisEntry, ValueEntry) raises Store.Error raises Workspace.Error =
 
     val (entry, value) =
       store.settings.working.or(abort(Workspace.Error(Workspace.Reason.Unworking)))
@@ -112,8 +112,22 @@ object Live:
     store.owner(name).let: other =>
       abort(Workspace.Error(Workspace.Reason.ValueExists(other.name, name)))
 
+    (entry, value)
+
+  // The store in which the working value has been released as `name`: it takes that name,
+  // with everything stored at it, and a new value of its former name, at which nothing is
+  // stored, is the working value beneath it. No content changes. The configuration is written.
+  def release(store: Workspace, name: Text)
+  :   Workspace raises Store.Error raises Workspace.Error raises Axis.Error =
+
+    val (entry, value) = releasing(store, name)
     val renamed = Sync.rename(store, entry.name, value.name, name, _.copy(working = Unset))
     Sync.add(renamed, entry.name, ValueEntry(value.name, name, working = true)).inscribe()
+
+  // The store whose live tree is the directory given, relative to the store's parent. What
+  // is there is not read: whatever differs from the store's documents is an edit from then on.
+  def settle(store: Workspace, directory: Text): Workspace raises Store.Error =
+    store.configure(store.settings.copy(live = directory))
 
   // The store in which a value is the working value, and no other is.
   def working(store: Workspace, axis: Text, value: Text)

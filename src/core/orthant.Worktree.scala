@@ -159,8 +159,8 @@ object Worktree:
   // the working tree may have.
   private def apart(store: Workspace, point: Point): Unit raises Workspace.Error =
     store.live.let: (directory, live) =>
-      if live == point
-      then abort(Workspace.Error(Workspace.Reason.Live(store.name(point), directory)))
+      val shown = store.space.axes.map { axis => t"${axis.name}=${point(axis)}" }.join(t" ")
+      if live == point then abort(Workspace.Error(Workspace.Reason.Live(shown, directory)))
 
   // A document as the working tree shows it at a point, or `Unset` if it is not there. It is
   // not shown if a hunk stored at the point has no one place.

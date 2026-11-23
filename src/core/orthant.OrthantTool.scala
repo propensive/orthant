@@ -129,6 +129,11 @@ object OrthantTool:
   private val CheckinCommand =
     Subcommand(t"checkin", t"store the edited documents: [<path>…]", group = TreeGroup)
 
+  private val LiveCommand =
+    Subcommand
+      ( t"live", t"say where the live tree is, or make a directory the live tree: [<directory>]",
+        group = TreeGroup )
+
   private val TagCommand =
     Subcommand
       ( t"tag", t"store the live tree at the working value, and release it: [<name>]",
@@ -453,6 +458,13 @@ object OrthantTool:
 
           reach.lay(usage(checkinSynopsis))(run(_))
 
+      case LiveCommand() :: rest =>
+        execute:
+          operands(rest).map(_()) match
+            case Nil              => attempt(live(Unset))
+            case directory :: Nil => attempt(live(directory))
+            case _                => usage(t"orthant live [<directory>]")
+
       case TagCommand() :: rest =>
         val remove = RemoveFlag().present
         val dry = DryRunFlag().present
@@ -495,6 +507,17 @@ object OrthantTool:
           t"With --live, the documents being written are in a directory of their own, which is",
           t"committed and edited freely, and `orthant tag` stores them. The working tree, in",
           t"which any other point is checked out, is then .orthant/work/tree unless one is named." )
+
+    case t"live" =>
+      List
+        ( t"orthant live [<directory>]",
+          t"",
+          t"Says where the live tree is, and which point's documents it holds; or makes a",
+          t"directory, relative to the store's, the live tree. Whatever there differs from what",
+          t"the store has at that point is an edit, which `orthant status` shows and `orthant",
+          t"tag` stores. The point is the working value, on its axis: the one which `orthant axis",
+          t"working` names or, failing that, the one unreleased value of an axis which follows",
+          t"the git repository." )
 
     case t"tag" =>
       List
@@ -717,6 +740,21 @@ object OrthantTool:
 
     Exit.Ok
 
+  private def live(directory: Optional[Text])(using Cli, Stdio): Raising[Exit] =
+    val store = open()
+
+    def say(store: Workspace): Unit =
+      val none = t"The store has no live tree; `orthant live <directory>` names one."
+
+      Out.println:
+        store.live.lay(none): (directory, point) =>
+          t"The live tree is $directory, at ${describe(store, point)}"
+
+    directory.lay(say(store)): directory =>
+      Disk.locked(store.lock)(say(Live.settle(store, directory)))
+
+    Exit.Ok
+
   private def working(axis: Text, value: Text)(using Cli, Stdio): Raising[Exit] =
     val store = open()
 
@@ -725,8 +763,8 @@ object OrthantTool:
       val title = marked.title(axis, marked.named(axis, value).or(value))
       Out.println(t"The working value is $title, on the axis $axis")
 
-      val advice = t"`live <directory>` in its configuration names one"
-      if marked.live.absent then Out.println(t"The store has no live tree; $advice.")
+      if marked.live.absent
+      then Out.println(t"The store has no live tree; `orthant live <directory>` names one.")
 
       Exit.Ok
 
@@ -1336,6 +1374,8 @@ object OrthantTool:
       val (directory, point) =
         store.live.or(abort(Workspace.Error(Workspace.Reason.Lifeless)))
 
+      // A release which would be refused is refused before anything is stored.
+      name.let(Live.releasing(store, _))
       val tally = Live.store(store, Nil, remove, dry)
       tally.saved.let(Kept.hold(_))
       Out.println(t"At ${describe(store, point)}")
@@ -1345,8 +1385,7 @@ object OrthantTool:
       then Out.println(t"  nothing to store: the live tree is as the store has it")
 
       name.let: name =>
-        val (entry, value) =
-          store.settings.working.or(abort(Workspace.Error(Workspace.Reason.Unworking)))
+        val (entry, value) = Live.releasing(store, name)
 
         // A release is of the whole tree: it is not made while a document is passed over.
         if !tally.skipped.nil then
