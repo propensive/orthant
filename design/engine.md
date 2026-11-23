@@ -369,7 +369,9 @@ Two details of the invariants as tested:
 
 ## Bolt codes
 
-Every error Orthant raises has a bolt code with the letter `o`.
+Every error Orthant raises has a bolt code with the letter `o`. The record of them is
+[`bolt.tel`](../bolt.tel), which the index of [bolt](https://github.com/propensive/bolt) codes
+names; a new error is added to both.
 
 | Code | Meaning |
 |---|---|
